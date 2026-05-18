@@ -1,5 +1,7 @@
 # EGTC-PAW Runtime v4 Stage A
 
+Public testbed for EGTC-PAW staged multi-agent runtime experiments. For a short tester-oriented entry point, see `PUBLIC_TESTING.md`.
+
 This folder deploys Phase A from `egtc_paw_runtime_v4_engineering_blueprint_trust_artifacts_sandbox.md`.
 
 Phase A goal:
