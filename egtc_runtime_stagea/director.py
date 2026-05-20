@@ -25,6 +25,7 @@ from .phaseb_models import (
 )
 from .repo_policy import RepoPolicy
 from .compiler import PermissionGrounder
+from .tool_registry import merge_model_config_tooling, swe_dataset_tooling_profile
 
 
 class DirectorAgentV1:
@@ -245,6 +246,7 @@ class DirectorAgentV1:
         workspace.mkdir(parents=True, exist_ok=True)
         seed_matches = self.experience_library.retrieve(objective, limit=16)
         skill_packet = self._materialize_director_deliberative_planning_skill(workspace)
+        tooling_profile = swe_dataset_tooling_profile()
         input_packet = {
             "objective": objective,
             "repo_policy": to_plain_dict(repo_policy),
@@ -265,6 +267,7 @@ class DirectorAgentV1:
                 }
                 for match in seed_matches
             ],
+            "available_tooling_profiles": [tooling_profile],
             "director_rules": [
                 "Director must choose how many agents/nodes are needed.",
                 "Director must compare multiple candidate workflow skeletons before selecting one.",
@@ -274,6 +277,7 @@ class DirectorAgentV1:
                 "Director must decide whether each specialized or uncertain stage needs research, and must mark blocked external research when network is unavailable.",
                 "Director must feed the draft plan back into itself for structural review before final output.",
                 "Director must define a scaling policy for tasks that exceed the current corpus.",
+                "Director must compare available tooling profiles before assigning tools or MCP servers to model-agent nodes.",
                 "Director must cite selected experience pattern ids.",
                 "Director must not request network or sandbox/permission expansion.",
                 "Director must keep verification read-only.",
@@ -361,6 +365,7 @@ class DirectorAgentV1:
         workspace.mkdir(parents=True, exist_ok=True)
         seed_matches = self.experience_library.retrieve(objective, limit=16)
         skill_packet = self._materialize_director_deliberative_planning_skill(workspace)
+        tooling_profile = swe_dataset_tooling_profile()
         input_packet = {
             "objective": objective,
             "repo_policy": to_plain_dict(repo_policy),
@@ -386,6 +391,7 @@ class DirectorAgentV1:
                 "subprocess",
                 "codex_cli",
             ],
+            "available_tooling_profiles": [tooling_profile],
             "preferred_agent_executor_kind": "model_agent",
             "model_agent": {
                 "provider": model_provider,
@@ -393,6 +399,11 @@ class DirectorAgentV1:
                 "provider_contract": (
                     "Use executor_kind=model_agent for LLM-backed agents. "
                     "Set model_provider/model/model_config on each NodeCapsule when a concrete provider is selected."
+                ),
+                "tooling_contract": (
+                    "Select tools and MCP servers from available_tooling_profiles only after comparing task needs, "
+                    "permission preconditions, and dataset access requirements. Decide agent count and tool allocation "
+                    "through Director deliberation rather than fixed heuristics."
                 ),
             },
             "director_rules": [
@@ -417,17 +428,19 @@ class DirectorAgentV1:
         token = identity.issue_token(actor, ["artifact:read", "artifact:write"])
         artifacts = ArtifactStore(workspace / "artifacts", identity)
         wrapper = AgentExecWrapper(artifacts, actor, token)
-        config = {
-            "input_files": [
-                "director_input.json",
-                skill_packet["skill_path"],
-                skill_packet["schema_path"],
-            ],
-            "output_file": "director_output.json",
-            "output_json": True,
-            "max_input_file_bytes": 240_000,
-            **(model_config or {}),
-        }
+        config = merge_model_config_tooling(
+            {
+                "input_files": [
+                    "director_input.json",
+                    skill_packet["skill_path"],
+                    skill_packet["schema_path"],
+                ],
+                "output_file": "director_output.json",
+                "output_json": True,
+                "max_input_file_bytes": 240_000,
+                **(model_config or {}),
+            }
+        )
         if model_provider == "deterministic" and "deterministic_response_json" not in config:
             config["deterministic_response_json"] = build_deterministic_model_director_output(
                 objective=objective,

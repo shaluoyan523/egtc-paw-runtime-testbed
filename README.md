@@ -167,6 +167,7 @@ Run the Phase H model-agent demos:
 
 ```bash
 python3 examples/phase_h_model_agent_unit_demo.py
+python3 examples/phase_h_model_agent_dataset_tooling_demo.py
 python3 examples/phase_h_model_director_demo.py
 python3 examples/phase_h_model_retry_fork_demo.py
 ```
@@ -181,6 +182,14 @@ MODEL_AGENT_MODEL=...
 ```
 
 The OpenAI-compatible path calls `/chat/completions` and writes requested structured artifacts through `model_config.output_file`.
+
+Model-agent units can also receive a declarative SWE dataset tooling profile through `swe_dataset_model_config()`. It attaches the tools and MCP descriptors used by the earlier SWE/ModelScope tests: workspace filesystem read/write/search, read-only git inspection, bounded Python execution, `compileall`, pytest, ModelScope `AI-ModelScope/SWE-bench` streaming, Hugging Face datasets fallback streaming, and simple/complex SWE case selection. Dataset tools are visible to Director for planning but executable only when network permission is grounded.
+
+For proxy environments, install the ModelScope extra so SOCKS support is present:
+
+```bash
+python3 -m pip install -e '.[modelscope]'
+```
 
 Director deliberation skill:
 

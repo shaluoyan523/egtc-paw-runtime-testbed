@@ -222,7 +222,152 @@ class WorkflowCompiler:
                     node.node_id,
                 )
             )
+        tools = node.model_config.get("tools")
+        if tools is not None and not isinstance(tools, list):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "model_agent_invalid_tools",
+                    "model_agent model_config.tools must be a list of tool descriptors.",
+                    node.node_id,
+                )
+            )
+            tools = []
+        mcp_servers = node.model_config.get("mcp_servers")
+        if mcp_servers is not None and not isinstance(mcp_servers, list):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "model_agent_invalid_mcp_servers",
+                    "model_agent model_config.mcp_servers must be a list of MCP server descriptors.",
+                    node.node_id,
+                )
+            )
+            mcp_servers = []
+        tool_server_ids = {
+            str(server.get("server_id"))
+            for server in (mcp_servers or [])
+            if isinstance(server, dict) and server.get("server_id")
+        }
+        known_tool_ids: set[str] = set()
+        for index, tool in enumerate(tools or []):
+            if not isinstance(tool, dict):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "model_agent_invalid_tool_descriptor",
+                        f"model_config.tools[{index}] must be an object.",
+                        node.node_id,
+                    )
+                )
+                continue
+            tool_id = tool.get("tool_id")
+            if not isinstance(tool_id, str) or not tool_id.strip():
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "model_agent_tool_missing_id",
+                        f"model_config.tools[{index}] must declare tool_id.",
+                        node.node_id,
+                    )
+                )
+            else:
+                known_tool_ids.add(tool_id)
+            if tool.get("mcp_server_id") and str(tool.get("mcp_server_id")) not in tool_server_ids:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "model_agent_tool_unknown_mcp_server",
+                        f"Tool {tool_id!r} references unknown mcp_server_id {tool.get('mcp_server_id')!r}.",
+                        node.node_id,
+                    )
+                )
+            if bool(tool.get("requires_network")) and self._node_network_mode(node) == "none":
+                findings.append(
+                    CompilerFinding(
+                        "warning",
+                        "model_agent_tool_requires_network",
+                        f"Tool {tool_id!r} requires network but node sandbox_profile.network is none; Director may plan it but runtime must not execute it without permission grounding.",
+                        node.node_id,
+                    )
+                )
+        allowed_mcp_tools = node.model_config.get("allowed_mcp_tools")
+        if allowed_mcp_tools is not None and not isinstance(allowed_mcp_tools, list):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "model_agent_invalid_allowed_mcp_tools",
+                    "model_agent model_config.allowed_mcp_tools must be a list when present.",
+                    node.node_id,
+                )
+            )
+            allowed_mcp_tools = []
+        for tool_id in allowed_mcp_tools or []:
+            if not isinstance(tool_id, str) or tool_id not in known_tool_ids:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "model_agent_allowed_mcp_tool_unknown",
+                        f"allowed_mcp_tools references unknown tool id {tool_id!r}.",
+                        node.node_id,
+                    )
+                )
+        tool_env = node.model_config.get("tool_env")
+        if tool_env is not None and not isinstance(tool_env, dict):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "model_agent_invalid_tool_env",
+                    "model_agent model_config.tool_env must be an object when present.",
+                    node.node_id,
+                )
+            )
+        for index, server in enumerate(mcp_servers or []):
+            if not isinstance(server, dict):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "model_agent_invalid_mcp_descriptor",
+                        f"model_config.mcp_servers[{index}] must be an object.",
+                        node.node_id,
+                    )
+                )
+                continue
+            server_id = server.get("server_id")
+            if not isinstance(server_id, str) or not server_id.strip():
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "model_agent_mcp_missing_id",
+                        f"model_config.mcp_servers[{index}] must declare server_id.",
+                        node.node_id,
+                    )
+                )
+            if not isinstance(server.get("tools"), list):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "model_agent_mcp_missing_tools",
+                        f"model_config.mcp_servers[{index}] must declare a tools list.",
+                        node.node_id,
+                    )
+                )
+            if bool(server.get("requires_network")) and self._node_network_mode(node) == "none":
+                findings.append(
+                    CompilerFinding(
+                        "warning",
+                        "model_agent_mcp_requires_network",
+                        f"MCP server {server_id!r} requires network but node sandbox_profile.network is none.",
+                        node.node_id,
+                    )
+                )
         return findings
+
+    def _node_network_mode(self, node: NodeCapsule) -> str:
+        profile = node.sandbox_profile
+        if isinstance(profile, dict):
+            return str(profile.get("network") or "none")
+        return "none"
 
     def _check_director_deliberation(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
         findings: list[CompilerFinding] = []

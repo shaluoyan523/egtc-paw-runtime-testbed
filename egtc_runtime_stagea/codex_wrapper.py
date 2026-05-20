@@ -210,6 +210,9 @@ class CodexExecWrapper:
         provider_name = node.model_provider or config.get("provider")
         provider = ModelAgentRegistry().get(str(provider_name) if provider_name else None)
         output_file = config.get("output_file")
+        tools = self._dict_list(config.get("tools"))
+        mcp_servers = self._dict_list(config.get("mcp_servers"))
+        tool_env = config.get("tool_env") if isinstance(config.get("tool_env"), dict) else {}
         request = ModelAgentRequest(
             node_id=node.node_id,
             role=role,
@@ -232,6 +235,9 @@ class CodexExecWrapper:
                 "agent_id": agent_id,
                 "executor_kind": node.executor_kind,
             },
+            tools=tools,
+            mcp_servers=mcp_servers,
+            tool_env=dict(tool_env),
         )
         return provider.run(request)
 
@@ -252,6 +258,34 @@ class CodexExecWrapper:
             "Instruction:",
             node.prompt or node.goal,
         ]
+        tooling_profile = config.get("tooling_profile")
+        tools = self._dict_list(config.get("tools"))
+        mcp_servers = self._dict_list(config.get("mcp_servers"))
+        tool_env = config.get("tool_env") if isinstance(config.get("tool_env"), dict) else {}
+        if tooling_profile or tools or mcp_servers or tool_env:
+            parts.extend(
+                [
+                    "Available tooling profile:",
+                    json.dumps(
+                        {
+                            "tooling_profile": tooling_profile,
+                            "tools": tools,
+                            "mcp_servers": mcp_servers,
+                            "allowed_mcp_tools": config.get("allowed_mcp_tools", []),
+                            "tool_env": tool_env,
+                            "dataset_access": config.get("dataset_access", {}),
+                            "permission_notes": config.get("tooling_permission_notes", []),
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    ),
+                    (
+                        "Tooling rule: use only tools whose permission preconditions are satisfied by the node "
+                        "sandbox profile and repo policy. Treat runtime_manifest MCP servers as capability "
+                        "descriptions unless the host maps them to concrete MCP transports."
+                    ),
+                ]
+            )
         input_files = config.get("input_files", [])
         if isinstance(input_files, list) and input_files:
             max_bytes = int(config.get("max_input_file_bytes", 200_000))
@@ -271,6 +305,11 @@ class CodexExecWrapper:
                     content += "\n<truncated>"
                 parts.append(f"\n# {rel_path}\n{content}")
         return "\n\n".join(parts)
+
+    def _dict_list(self, value: object) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
 
     def _safe_workspace_path(self, cwd: Path, relative_path: str) -> Path:
         path = Path(relative_path)

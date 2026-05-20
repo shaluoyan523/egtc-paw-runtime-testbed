@@ -319,7 +319,39 @@ Every node instantiation must include `instantiation_principles`:
   "model": "provider model id, or null when selected at runtime",
   "model_config": {
     "output_file": "agent_output.json",
-    "output_json": true
+    "output_json": true,
+    "tooling_profile": "swe_dataset_testing_v1",
+    "tools": [
+      {
+        "tool_id": "filesystem.read_text",
+        "tool_type": "filesystem|git|python|dataset|other",
+        "description": "what this node may use it for",
+        "mcp_server_id": "egtc.filesystem",
+        "permissions": ["read"],
+        "requires_network": false,
+        "input_contract": {},
+        "output_contract": {}
+      }
+    ],
+    "mcp_servers": [
+      {
+        "server_id": "egtc.filesystem",
+        "name": "EGTC workspace filesystem MCP",
+        "transport": "runtime_manifest|stdio|http",
+        "scope": "workspace|dataset|external",
+        "tools": ["filesystem.read_text"],
+        "permission_boundary": "repo-policy and sandbox grounding for this server",
+        "requires_network": false
+      }
+    ],
+    "allowed_mcp_tools": ["filesystem.read_text"],
+    "tool_env": {
+      "optional": ["MODELSCOPE_CACHE", "HF_HOME", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"],
+      "required_python_packages": ["modelscope", "datasets", "pyarrow", "httpx[socks]"]
+    },
+    "dataset_access": {
+      "primary": {"dataset": "SWE-bench", "namespace": "AI-ModelScope", "streaming": true}
+    }
   },
   "prompt": "Worker instruction...",
   "required_evidence": ["analysis_log", "touchpoint_map"],
@@ -360,6 +392,8 @@ Rules:
 - `executor_principle` must justify why the node is an agent, subprocess, verifier, overlooker, or other executor.
 - Prefer `executor_kind=model_agent` for model-backed agents. Use `codex_cli` only for explicit Codex compatibility tests and `subprocess` only for deterministic local commands.
 - For `model_agent`, include `model_provider`; include `model` when a concrete model is selected; use `model_config.output_file` and `model_config.output_json` when the node must write a structured artifact.
+- For `model_agent`, use `model_config.tools`, `model_config.mcp_servers`, `allowed_mcp_tools`, `tool_env`, and `dataset_access` to assign tool/MCP capabilities selected from `available_tooling_profiles`. The Director must compare tool fit, permission preconditions, and scale implications before deciding how many agents receive each capability.
+- Dataset tools that require network must be marked with `requires_network=true`; they are not executable under `network:none` until permission grounding and overlooker review approve the escalation.
 - `prompt_principle` must justify scope, ownership boundary, and non-overlap with peer nodes.
 - `permission_principle` must connect permissions to repo policy and the node goal.
 - `evidence_principle` must justify `required_evidence` and acceptance criteria.

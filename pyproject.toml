@@ -12,6 +12,7 @@ modelscope = [
   "datasets",
   "pandas",
   "pyarrow",
+  "httpx[socks]",
   "addict",
   "simplejson",
   "sortedcontainers",
