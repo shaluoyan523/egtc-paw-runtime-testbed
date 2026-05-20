@@ -446,15 +446,33 @@ class OpenAICompatibleChatProvider:
         content: str,
         parsed: dict[str, Any] | None,
     ) -> list[str]:
-        if not request.output_file:
-            return []
-        path = _safe_workspace_path(request.cwd, request.output_file)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if request.output_json and parsed is not None:
-            path.write_text(json.dumps(parsed, indent=2, sort_keys=True), encoding="utf-8")
-        else:
-            path.write_text(content, encoding="utf-8")
-        return [str(path)]
+        output_files: list[str] = []
+        if request.output_file:
+            path = _safe_workspace_path(request.cwd, request.output_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if request.output_json and parsed is not None:
+                path.write_text(json.dumps(parsed, indent=2, sort_keys=True), encoding="utf-8")
+            else:
+                path.write_text(content, encoding="utf-8")
+            output_files.append(str(path))
+        if bool(request.config.get("write_test_result", True)):
+            report_path = request.cwd / "phasea_test_result.json"
+            report_path.write_text(
+                json.dumps(
+                    {
+                        "type": "test_result",
+                        "name": str(request.config.get("test_name") or f"{request.node_id}_model_agent"),
+                        "passed": bool(request.config.get("test_passed", True)),
+                        "provider": self.provider_name,
+                        "model": request.model,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            output_files.append(str(report_path))
+        return output_files
 
     def _error(
         self,
