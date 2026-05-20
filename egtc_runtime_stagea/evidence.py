@@ -42,6 +42,7 @@ class EvidenceCollector:
         workspace_test_report = self._workspace_test_report(workspace)
         if workspace_test_report:
             test_events.append(workspace_test_report)
+        tool_artifacts = self._workspace_tool_artifacts(workspace, node.node_id)
         artifacts = {
             "log": worker_result.stdout_ref,
             "stderr": worker_result.stderr_ref,
@@ -61,6 +62,7 @@ class EvidenceCollector:
                 self.token,
             ),
         }
+        artifacts.update(tool_artifacts)
         summary = {
             "evidence_id": evidence_id,
             "node_id": node.node_id,
@@ -108,3 +110,34 @@ class EvidenceCollector:
             "passed": False,
             "error": "phasea_test_result.json is not a JSON object",
         }
+
+    def _workspace_tool_artifacts(
+        self,
+        workspace: Path | None,
+        node_id: str,
+    ) -> dict[str, object]:
+        if not workspace:
+            return {}
+        artifacts: dict[str, object] = {}
+        audit_path = workspace / "tool_audit.jsonl"
+        if audit_path.exists():
+            artifacts["tool_audit"] = self.artifact_store.put_bytes(
+                audit_path.read_bytes(),
+                "application/jsonl",
+                {"kind": "tool_audit", "node_id": node_id},
+                self.actor,
+                self.token,
+            )
+        evidence_path = workspace / "tool_evidence.json"
+        if evidence_path.exists():
+            try:
+                tool_evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+            except Exception as exc:
+                tool_evidence = {"error": str(exc), "valid": False}
+            artifacts["tool_evidence"] = self.artifact_store.put_json(
+                tool_evidence,
+                {"kind": "tool_evidence", "node_id": node_id},
+                self.actor,
+                self.token,
+            )
+        return artifacts

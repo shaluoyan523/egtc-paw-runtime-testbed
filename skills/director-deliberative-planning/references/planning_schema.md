@@ -337,7 +337,7 @@ Every node instantiation must include `instantiation_principles`:
       {
         "server_id": "egtc.filesystem",
         "name": "EGTC workspace filesystem MCP",
-        "transport": "runtime_manifest|stdio|http",
+        "transport": "runtime_builtin|stdio|http",
         "scope": "workspace|dataset|external",
         "tools": ["filesystem.read_text"],
         "permission_boundary": "repo-policy and sandbox grounding for this server",
