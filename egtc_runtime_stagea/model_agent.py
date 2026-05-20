@@ -8,6 +8,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .tool_runtime import (
+    ModelAgentToolRuntime,
+    extract_tool_calls_from_text,
+    normalize_tool_calls,
+    openai_tool_specs,
+)
+
 
 @dataclass(frozen=True)
 class ModelAgentRequest:
@@ -27,6 +34,7 @@ class ModelAgentRequest:
     tools: list[dict[str, Any]] = field(default_factory=list)
     mcp_servers: list[dict[str, Any]] = field(default_factory=list)
     tool_env: dict[str, Any] = field(default_factory=dict)
+    sandbox_profile: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -41,6 +49,8 @@ class ModelAgentResult:
     output_files: list[str] = field(default_factory=list)
     usage: dict[str, Any] = field(default_factory=dict)
     network_attempt_count: int = 0
+    command_count: int = 0
+    tool_call_count: int = 0
 
 
 class ModelAgentProvider(Protocol):
@@ -72,9 +82,18 @@ class DeterministicModelAgentProvider:
                 stderr=str(config.get("failure_message") or "simulated failure"),
             )
 
+        tool_runtime = ModelAgentToolRuntime(request)
+        configured_tool_calls = config.get("deterministic_tool_calls", config.get("tool_calls"))
+        tool_runtime.dispatch_many(normalize_tool_calls(configured_tool_calls))
+        if tool_runtime.results:
+            config["tool_status_passed"] = not tool_runtime.has_blocking_failure
+            config["tool_call_count"] = tool_runtime.tool_call_count
         response_json = self._response_json(request)
+        if response_json is not None and tool_runtime.results:
+            response_json.setdefault("tool_runtime", tool_runtime.result_payload())
         response_text = self._response_text(request, response_json)
         output_files = self._write_outputs(request, response_text, response_json)
+        output_files.extend(tool_runtime.write_artifacts())
         events = [
             {
                 "type": "model_agent_started",
@@ -86,6 +105,7 @@ class DeterministicModelAgentProvider:
                 "tool_count": len(request.tools),
                 "mcp_server_count": len(request.mcp_servers),
             },
+            *tool_runtime.stdout_events(),
             {
                 "type": "model_agent_response",
                 "provider": self.provider_name,
@@ -95,6 +115,8 @@ class DeterministicModelAgentProvider:
                 "json_output": response_json is not None,
                 "tool_ids": _tool_ids(request.tools),
                 "mcp_server_ids": _mcp_server_ids(request.mcp_servers),
+                "tool_call_count": tool_runtime.tool_call_count,
+                "permission_review_required": tool_runtime.has_permission_review_request,
             },
         ]
         if bool(config.get("emit_test_event", True)):
@@ -102,7 +124,8 @@ class DeterministicModelAgentProvider:
                 {
                     "type": "test_result",
                     "name": str(config.get("test_name") or f"{request.node_id}_model_agent"),
-                    "passed": bool(config.get("test_passed", True)),
+                    "passed": bool(config.get("test_passed", config.get("tool_status_passed", True))),
+                    "tool_call_count": int(config.get("tool_call_count", 0)),
                 }
             )
         return ModelAgentResult(
@@ -114,6 +137,9 @@ class DeterministicModelAgentProvider:
             raw_response=response_text,
             parsed_json=response_json,
             output_files=output_files,
+            network_attempt_count=tool_runtime.network_attempt_count,
+            command_count=tool_runtime.command_count,
+            tool_call_count=tool_runtime.tool_call_count,
         )
 
     def _response_json(self, request: ModelAgentRequest) -> dict[str, Any] | None:
@@ -181,8 +207,14 @@ class DeterministicModelAgentProvider:
                     {
                         "type": "test_result",
                         "name": str(request.config.get("test_name") or f"{request.node_id}_model_agent"),
-                        "passed": bool(request.config.get("test_passed", True)),
+                        "passed": bool(
+                            request.config.get(
+                                "test_passed",
+                                request.config.get("tool_status_passed", True),
+                            )
+                        ),
                         "provider": self.provider_name,
+                        "tool_call_count": int(request.config.get("tool_call_count", 0)),
                     },
                     indent=2,
                     sort_keys=True,
@@ -346,53 +378,122 @@ class OpenAICompatibleChatProvider:
             )
             endpoint = f"{base_url.rstrip('/')}/chat/completions"
 
-        payload: dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": request.system_prompt
-                    or "You are a precise model-backed EGTC-PAW agent. Return only the requested artifact content.",
-                },
-                {"role": "user", "content": request.prompt},
-            ],
-            "temperature": float(config.get("temperature", 0)),
-        }
-        if "max_tokens" in config:
-            payload["max_tokens"] = int(config["max_tokens"])
-        if request.output_json and bool(config.get("enforce_json_response_format")):
-            payload["response_format"] = {"type": "json_object"}
-
-        body = json.dumps(payload).encode("utf-8")
-        http_request = urllib.request.Request(
-            endpoint,
-            data=body,
-            headers={
-                **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
-                "Content-Type": "application/json",
+        enable_tool_calls = bool(config.get("enable_tool_calls", True))
+        send_openai_tools = bool(config.get("send_openai_tools", False))
+        messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": request.system_prompt
+                or "You are a precise model-backed EGTC-PAW agent. Return only the requested artifact content.",
             },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(http_request, timeout=request.timeout_sec) as response:
-                raw = response.read().decode("utf-8")
-        except urllib.error.HTTPError as exc:
-            stderr = exc.read().decode("utf-8", errors="replace")
-            return self._error(request, f"HTTP {exc.code}: {stderr}", network_attempts=1)
-        except Exception as exc:
-            return self._error(request, str(exc), network_attempts=1)
+            {"role": "user", "content": request.prompt},
+        ]
+        tool_runtime = ModelAgentToolRuntime(request)
+        max_tool_rounds = int(config.get("max_tool_rounds", 4))
+        network_attempts = 0
+        content = ""
+        parsed: dict[str, Any] | None = None
+        usage: dict[str, Any] = {}
 
-        data = _loads_dict(raw)
-        content = self._message_content(data)
-        parsed = _extract_json_object(content) if request.output_json else None
+        for round_index in range(max_tool_rounds + 1):
+            payload: dict[str, Any] = {
+                "model": model,
+                "messages": messages,
+                "temperature": float(config.get("temperature", 0)),
+            }
+            if "max_tokens" in config:
+                payload["max_tokens"] = int(config["max_tokens"])
+            if request.output_json and bool(config.get("enforce_json_response_format")):
+                payload["response_format"] = {"type": "json_object"}
+            if enable_tool_calls and send_openai_tools and request.tools:
+                payload["tools"] = openai_tool_specs(request.tools)
+                payload["tool_choice"] = "auto"
+
+            body = json.dumps(payload).encode("utf-8")
+            http_request = urllib.request.Request(
+                endpoint,
+                data=body,
+                headers={
+                    **({"Authorization": f"Bearer {api_key}"} if api_key else {}),
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(http_request, timeout=request.timeout_sec) as response:
+                    raw = response.read().decode("utf-8")
+            except urllib.error.HTTPError as exc:
+                stderr = exc.read().decode("utf-8", errors="replace")
+                return self._error(request, f"HTTP {exc.code}: {stderr}", network_attempts=network_attempts + 1)
+            except Exception as exc:
+                return self._error(request, str(exc), network_attempts=network_attempts + 1)
+            network_attempts += 1
+
+            data = _loads_dict(raw)
+            usage = data.get("usage", {}) if isinstance(data.get("usage"), dict) else {}
+            message = self._message(data)
+            content = self._message_content(data)
+            tool_calls = normalize_tool_calls(message.get("tool_calls")) if enable_tool_calls else []
+            if enable_tool_calls and not tool_calls:
+                tool_calls = extract_tool_calls_from_text(content)
+            if tool_calls:
+                tool_results = tool_runtime.dispatch_many(tool_calls)
+                if round_index >= max_tool_rounds:
+                    return self._error(
+                        request,
+                        f"max_tool_rounds exceeded: {max_tool_rounds}",
+                        raw_response=content,
+                        network_attempts=network_attempts + tool_runtime.network_attempt_count,
+                    )
+                if message.get("tool_calls"):
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "content": content or None,
+                            "tool_calls": message.get("tool_calls"),
+                        }
+                    )
+                    for result in tool_results:
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": result.call_id,
+                                "content": json.dumps(result.to_dict(), sort_keys=True),
+                            }
+                        )
+                else:
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "Tool results are available below. Continue the task and return the final requested artifact.\n"
+                                + json.dumps(
+                                    [result.to_dict() for result in tool_results],
+                                    indent=2,
+                                    sort_keys=True,
+                                )
+                            ),
+                        }
+                    )
+                continue
+            parsed = _extract_json_object(content) if request.output_json else None
+            break
+
         if request.output_json and parsed is None:
             return self._error(
                 request,
                 "model response was not a JSON object",
                 raw_response=content,
-                network_attempts=1,
+                network_attempts=network_attempts + tool_runtime.network_attempt_count,
             )
+        if parsed is not None and tool_runtime.results:
+            parsed.setdefault("tool_runtime", tool_runtime.result_payload())
+        if tool_runtime.results:
+            config["tool_status_passed"] = not tool_runtime.has_blocking_failure
+            config["tool_call_count"] = tool_runtime.tool_call_count
         output_files = self._write_outputs(request, content, parsed)
+        output_files.extend(tool_runtime.write_artifacts())
         stdout = self._jsonl(
             [
                 {
@@ -405,6 +506,7 @@ class OpenAICompatibleChatProvider:
                     "tool_count": len(request.tools),
                     "mcp_server_count": len(request.mcp_servers),
                 },
+                *tool_runtime.stdout_events(),
                 {
                     "type": "model_agent_response",
                     "provider": self.provider_name,
@@ -414,6 +516,8 @@ class OpenAICompatibleChatProvider:
                     "json_output": parsed is not None,
                     "tool_ids": _tool_ids(request.tools),
                     "mcp_server_ids": _mcp_server_ids(request.mcp_servers),
+                    "tool_call_count": tool_runtime.tool_call_count,
+                    "permission_review_required": tool_runtime.has_permission_review_request,
                 },
             ]
         )
@@ -426,18 +530,24 @@ class OpenAICompatibleChatProvider:
             raw_response=content,
             parsed_json=parsed,
             output_files=output_files,
-            usage=data.get("usage", {}) if isinstance(data.get("usage"), dict) else {},
-            network_attempt_count=1,
+            usage=usage,
+            network_attempt_count=network_attempts + tool_runtime.network_attempt_count,
+            command_count=tool_runtime.command_count,
+            tool_call_count=tool_runtime.tool_call_count,
         )
 
-    def _message_content(self, data: dict[str, Any]) -> str:
+    def _message(self, data: dict[str, Any]) -> dict[str, Any]:
         choices = data.get("choices", [])
         if not choices or not isinstance(choices[0], dict):
-            return ""
+            return {}
         message = choices[0].get("message", {})
-        if isinstance(message, dict):
-            content = message.get("content")
-            return content if isinstance(content, str) else ""
+        return message if isinstance(message, dict) else {}
+
+    def _message_content(self, data: dict[str, Any]) -> str:
+        message = self._message(data)
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
         return ""
 
     def _write_outputs(
@@ -462,9 +572,15 @@ class OpenAICompatibleChatProvider:
                     {
                         "type": "test_result",
                         "name": str(request.config.get("test_name") or f"{request.node_id}_model_agent"),
-                        "passed": bool(request.config.get("test_passed", True)),
+                        "passed": bool(
+                            request.config.get(
+                                "test_passed",
+                                request.config.get("tool_status_passed", True),
+                            )
+                        ),
                         "provider": self.provider_name,
                         "model": request.model,
+                        "tool_call_count": int(request.config.get("tool_call_count", 0)),
                     },
                     indent=2,
                     sort_keys=True,

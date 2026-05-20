@@ -29,7 +29,7 @@ MODEL_AGENT_API_KEY=...
 MODEL_AGENT_MODEL=...
 ```
 
-Dataset-oriented unit agents can attach the SWE/ModelScope tooling profile with `swe_dataset_model_config()`. The profile exposes filesystem, git, Python, pytest, ModelScope SWE-bench streaming, Hugging Face streaming fallback, and case-selection tools plus MCP descriptors. Network dataset tools remain permission-gated; install optional dependencies with:
+Dataset-oriented unit agents can attach the SWE/ModelScope tooling profile with `swe_dataset_model_config()`. The profile exposes filesystem, git, Python, pytest, ModelScope SWE-bench streaming, Hugging Face streaming fallback, and case-selection tools plus MCP descriptors. `runtime_builtin` MCP tools execute through the EGTC runtime shim and emit tool audit/evidence artifacts. Network dataset tools remain permission-gated; install optional dependencies with:
 
 ```bash
 python3 -m pip install -e '.[modelscope]'

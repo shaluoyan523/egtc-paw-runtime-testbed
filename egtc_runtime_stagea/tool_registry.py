@@ -140,7 +140,7 @@ def swe_dataset_tooling_profile() -> dict[str, Any]:
         {
             "server_id": "egtc.filesystem",
             "name": "EGTC workspace filesystem MCP",
-            "transport": "runtime_manifest",
+            "transport": "runtime_builtin",
             "scope": "workspace",
             "tools": [
                 "filesystem.read_text",
@@ -153,7 +153,7 @@ def swe_dataset_tooling_profile() -> dict[str, Any]:
         {
             "server_id": "egtc.git",
             "name": "EGTC git inspection MCP",
-            "transport": "runtime_manifest",
+            "transport": "runtime_builtin",
             "scope": "workspace",
             "tools": ["git.inspect"],
             "permission_boundary": "read-only git inspection; no reset, checkout, push, or branch deletion",
@@ -162,7 +162,7 @@ def swe_dataset_tooling_profile() -> dict[str, Any]:
         {
             "server_id": "egtc.python",
             "name": "EGTC bounded Python execution MCP",
-            "transport": "runtime_manifest",
+            "transport": "runtime_builtin",
             "scope": "workspace",
             "tools": ["python.run_script", "python.compileall", "python.pytest"],
             "permission_boundary": "only commands present in repo policy or node sandbox profile may execute",
@@ -171,7 +171,7 @@ def swe_dataset_tooling_profile() -> dict[str, Any]:
         {
             "server_id": "egtc.dataset",
             "name": "EGTC SWE dataset access MCP",
-            "transport": "runtime_manifest",
+            "transport": "runtime_builtin",
             "scope": "dataset",
             "tools": [
                 "dataset.modelscope_swe_stream",

@@ -66,7 +66,7 @@ class CodexExecWrapper:
             stdout = model_result.stdout
             stderr = model_result.stderr
             network_attempt_count = model_result.network_attempt_count
-            command_count = 0
+            command_count = model_result.command_count
         else:
             try:
                 completed = subprocess.run(
@@ -238,6 +238,7 @@ class CodexExecWrapper:
             tools=tools,
             mcp_servers=mcp_servers,
             tool_env=dict(tool_env),
+            sandbox_profile=dict(node.sandbox_profile or {}),
         )
         return provider.run(request)
 
@@ -281,8 +282,13 @@ class CodexExecWrapper:
                     ),
                     (
                         "Tooling rule: use only tools whose permission preconditions are satisfied by the node "
-                        "sandbox profile and repo policy. Treat runtime_manifest MCP servers as capability "
-                        "descriptions unless the host maps them to concrete MCP transports."
+                        "sandbox profile and repo policy. runtime_builtin MCP servers are executed by the EGTC "
+                        "runtime shim; stdio/http MCP transports require a host integration."
+                    ),
+                    (
+                        "Tool-call protocol: when you need a tool, return strict JSON shaped as "
+                        '{"tool_calls":[{"id":"call-1","tool_id":"filesystem.read_text","arguments":{...}}]}. '
+                        "After the runtime returns tool results, continue and emit the final requested artifact."
                     ),
                 ]
             )
