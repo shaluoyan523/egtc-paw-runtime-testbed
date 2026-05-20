@@ -314,7 +314,13 @@ Every node instantiation must include `instantiation_principles`:
   "skeleton_node_id": "explore-context",
   "node_id": "phasef-explore-context",
   "phase": "exploration",
-  "executor_kind": "codex_cli",
+  "executor_kind": "model_agent",
+  "model_provider": "deterministic|openai_compatible|local_openai_compatible",
+  "model": "provider model id, or null when selected at runtime",
+  "model_config": {
+    "output_file": "agent_output.json",
+    "output_json": true
+  },
   "prompt": "Worker instruction...",
   "required_evidence": ["analysis_log", "touchpoint_map"],
   "acceptance_criteria": ["Submit only read-only findings."],
@@ -322,7 +328,7 @@ Every node instantiation must include `instantiation_principles`:
   "instantiation_principles": {
     "stage_id": "stage-1",
     "skeleton_node_id": "explore-context",
-    "executor_principle": "codex_cli is selected because this node must be performed by an agent that can inspect repo context.",
+    "executor_principle": "model_agent is selected because this node must be performed by a provider-backed agent that can be served by Codex, an OpenAI-compatible endpoint, or another model provider.",
     "prompt_principle": "The prompt confines ownership to source touchpoint discovery and forbids writes.",
     "permission_principle": "Read-only repo access is enough; no write or network permission is grounded.",
     "evidence_principle": "analysis_log and touchpoint_map are the artifacts needed by the writer and overlooker.",
@@ -352,6 +358,8 @@ Every node instantiation must include `instantiation_principles`:
 Rules:
 
 - `executor_principle` must justify why the node is an agent, subprocess, verifier, overlooker, or other executor.
+- Prefer `executor_kind=model_agent` for model-backed agents. Use `codex_cli` only for explicit Codex compatibility tests and `subprocess` only for deterministic local commands.
+- For `model_agent`, include `model_provider`; include `model` when a concrete model is selected; use `model_config.output_file` and `model_config.output_json` when the node must write a structured artifact.
 - `prompt_principle` must justify scope, ownership boundary, and non-overlap with peer nodes.
 - `permission_principle` must connect permissions to repo policy and the node goal.
 - `evidence_principle` must justify `required_evidence` and acceptance criteria.

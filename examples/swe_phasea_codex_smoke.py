@@ -77,7 +77,7 @@ def main() -> int:
     output_root = ROOT / "swe_codex_smoke_data"
     cases_dir = output_root / "cases"
     seeds_dir = output_root / "seed_workspaces"
-    runtime = StageARuntime(output_root / "runtime_data")
+    runtime = StageARuntime(output_root / "runtime_data", overlooker_mode="codex")
 
     results = []
     for case in selected:

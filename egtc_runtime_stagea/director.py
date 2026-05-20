@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from .artifact_store import ArtifactStore
-from .codex_wrapper import CodexExecWrapper
+from .agent_wrapper import AgentExecWrapper
+from .director_output_factory import build_deterministic_model_director_output
 from .experience import ExperienceLibrary, ExperienceMatch
 from .identity import IdentityService
 from .models import NodeCapsule, to_plain_dict
@@ -288,7 +289,7 @@ class DirectorAgentV1:
         actor = identity.actor("director-phasef", "director")
         token = identity.issue_token(actor, ["artifact:read", "artifact:write"])
         artifacts = ArtifactStore(workspace / "artifacts", identity)
-        wrapper = CodexExecWrapper(artifacts, actor, token)
+        wrapper = AgentExecWrapper(artifacts, actor, token)
         director_node = NodeCapsule(
             node_id="phasef-director-agent",
             phase="Phase F Director",
@@ -339,6 +340,157 @@ class DirectorAgentV1:
             director_result.worker_id,
         )
         blueprint.director_mode = "codex"
+        blueprint.director_session_id = director_result.worker_id
+        return blueprint
+
+    def plan_with_model_director(
+        self,
+        objective: str,
+        repo_policy: RepoPolicy,
+        workspace: Path,
+        *,
+        model_provider: str = "deterministic",
+        model: str | None = None,
+        timeout_sec: int = 240,
+        model_config: dict[str, Any] | None = None,
+    ) -> WorkflowBlueprint:
+        """Launch a provider-backed Director Agent session without binding to Codex CLI."""
+
+        if self.experience_library is None:
+            raise ValueError("plan_with_model_director requires an ExperienceLibrary")
+        workspace.mkdir(parents=True, exist_ok=True)
+        seed_matches = self.experience_library.retrieve(objective, limit=16)
+        skill_packet = self._materialize_director_deliberative_planning_skill(workspace)
+        input_packet = {
+            "objective": objective,
+            "repo_policy": to_plain_dict(repo_policy),
+            "director_skill": skill_packet,
+            "experience_candidates": [
+                {
+                    "pattern_id": match.pattern.pattern_id,
+                    "pattern_type": match.pattern.pattern_type,
+                    "description": match.pattern.description,
+                    "score": match.score,
+                    "matched_signals": match.matched_signals,
+                    "recommended_structure": match.pattern.recommended_structure,
+                    "required_evidence": match.pattern.required_evidence,
+                    "risk_notes": match.pattern.risk_notes[:2],
+                    "evidence_level": match.pattern.evidence_level,
+                    "confidence_score": match.pattern.confidence_score,
+                    "source_refs": match.pattern.source_refs[:3],
+                }
+                for match in seed_matches
+            ],
+            "available_executor_kinds": [
+                "model_agent",
+                "subprocess",
+                "codex_cli",
+            ],
+            "preferred_agent_executor_kind": "model_agent",
+            "model_agent": {
+                "provider": model_provider,
+                "model": model,
+                "provider_contract": (
+                    "Use executor_kind=model_agent for LLM-backed agents. "
+                    "Set model_provider/model/model_config on each NodeCapsule when a concrete provider is selected."
+                ),
+            },
+            "director_rules": [
+                "Director must choose how many agents/nodes are needed.",
+                "Director must compare multiple candidate workflow skeletons before selecting one.",
+                "Director must read the skill files named by director_input.director_skill before emitting the final workflow.",
+                "Director must feed the draft plan back into itself for structural review before final output.",
+                "Director must cite selected experience pattern ids.",
+                "Director must not assume Codex CLI is the only agent runtime.",
+                "Director must prefer executor_kind=model_agent for model-backed agent units.",
+                "Director must not request network or sandbox/permission expansion.",
+                "Verification nodes must be read-only.",
+                "Director structured output is compiled before execution.",
+            ],
+        }
+        (workspace / "director_input.json").write_text(
+            json.dumps(input_packet, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        identity = IdentityService()
+        actor = identity.actor("director-model-agent", "director")
+        token = identity.issue_token(actor, ["artifact:read", "artifact:write"])
+        artifacts = ArtifactStore(workspace / "artifacts", identity)
+        wrapper = AgentExecWrapper(artifacts, actor, token)
+        config = {
+            "input_files": [
+                "director_input.json",
+                skill_packet["skill_path"],
+                skill_packet["schema_path"],
+            ],
+            "output_file": "director_output.json",
+            "output_json": True,
+            "max_input_file_bytes": 240_000,
+            **(model_config or {}),
+        }
+        if model_provider == "deterministic" and "deterministic_response_json" not in config:
+            config["deterministic_response_json"] = build_deterministic_model_director_output(
+                objective=objective,
+                repo_policy=repo_policy,
+                seed_matches=seed_matches,
+                skill_packet=skill_packet,
+                executor_kind="model_agent",
+                model_provider=model_provider,
+                model=model,
+            )
+        director_node = NodeCapsule(
+            node_id="phaseh-model-director-agent",
+            phase="Phase H Model Director",
+            goal="Select and apply experience patterns using provider-backed model-agent units.",
+            command=[],
+            acceptance_criteria=[
+                "Director must write strict JSON to director_output.json.",
+                "Director chooses topology and number of worker agents.",
+                "Director uses model_agent for provider-backed agent units.",
+                "Director cites experience pattern ids used for the workflow.",
+            ],
+            required_evidence=["log", "sandbox_events", "resource_report"],
+            executor_kind="model_agent",
+            prompt=self._model_director_prompt(),
+            model_provider=model_provider,
+            model=model,
+            model_config=config,
+            sandbox_profile={
+                "backend": "model_agent",
+                "sandbox_mode": "workspace_write",
+                "network": "none",
+                "allowed_read_paths": ["."],
+                "allowed_write_paths": ["."],
+                "resource_limits": {
+                    "wall_time_sec": timeout_sec,
+                    "memory_mb": 1024,
+                    "disk_mb": 512,
+                    "max_processes": 1,
+                    "max_command_count": 0,
+                },
+            },
+        )
+        director_result = wrapper.run(
+            director_node,
+            workspace,
+            role="director",
+        )
+        if director_result.exit_code != 0:
+            raise RuntimeError(
+                f"Model Director session failed with exit_code={director_result.exit_code}"
+            )
+        output = self._read_director_output(workspace / "director_output.json")
+        if not output:
+            raise RuntimeError("Model Director did not create a valid director_output.json")
+        self._validate_director_skill_usage(output, skill_packet)
+        blueprint = self._blueprint_from_codex_director_output(
+            output,
+            objective,
+            repo_policy,
+            seed_matches,
+            director_result.worker_id,
+        )
+        blueprint.director_mode = "model_agent"
         blueprint.director_session_id = director_result.worker_id
         return blueprint
 
@@ -403,7 +555,7 @@ Rules:
 - Every planning record, node_selection_principles object, instantiation_principles object, and draft_plan_review structure finding must include decision_basis.
 - The sum of per_stage_agent_allocation.agent_count values must equal agent_allocation.total_agents and the final skeleton node count.
 - Every final node id must appear in plan_derivation_trace.
-- Node instantiations should normally use executor_kind="codex_cli" because workers are agents.
+- Node instantiations should normally use executor_kind="model_agent" for model-backed agents; use codex_cli only for explicit Codex compatibility.
 - Do not request network access.
 - Do not write sensitive paths.
 - Verification nodes must be read-only.
@@ -412,6 +564,61 @@ Rules:
 
     def _phase_f_director_prompt(self) -> str:
         return self._phase_f_director_prompt_short()
+
+    def _model_director_prompt(self) -> str:
+        return """
+You are the EGTC-PAW Director Agent running as a provider-backed model agent.
+
+Read ./director_input.json, then read these local skill files before planning:
+- ./skills/director-deliberative-planning/SKILL.md
+- ./skills/director-deliberative-planning/references/planning_schema.md
+
+Create ./director_output.json as strict JSON only. Do not write markdown.
+
+Planning order:
+1. Diagnose the task and retrieve applicable experience patterns from director_input.experience_candidates.
+2. Build a linear requirement flow.
+3. Choose stage structures, research route decisions, and per-stage agent allocation.
+4. Compare at least three complete skeleton candidates: small, selected, and larger-scalable.
+5. Draft final nodes, edges, and node instantiations.
+6. Feed that draft plan back into yourself for structural review. Review it as if another Director created it.
+7. Apply necessary corrections, then emit the final workflow.
+
+Rules:
+- Use only pattern ids present in director_input.experience_candidates.
+- Do not assume a fixed number of agents; derive counts from complexity, uncertainty, dependency breadth, validation burden, risk, and evidence.
+- Do not assume Codex CLI is the only agent runtime.
+- Prefer executor_kind="model_agent" for model-backed agents and include model_provider/model/model_config when concrete provider information is known.
+- Use subprocess only for deterministic local commands, and codex_cli only when the plan explicitly needs Codex compatibility.
+- Every planning record, node_selection_principles object, instantiation_principles object, and draft_plan_review structure finding must include decision_basis.
+- The sum of per_stage_agent_allocation.agent_count values must equal agent_allocation.total_agents and the final skeleton node count.
+- Every final node id must appear in plan_derivation_trace.
+- Verification nodes must be read-only.
+- Do not request network access, clone repositories, write sensitive paths, or run tests.
+
+director_output.json must contain exactly these top-level objects:
+- director_skill_usage
+- task_diagnosis
+- workflow_skeleton
+- node_instantiations
+
+Use the schema in planning_schema.md for exact field shapes. Required workflow_skeleton fields:
+- topology
+- agent_allocation
+- alternative_skeletons
+- scaling_policy
+- deliberation_trace
+- linear_requirement_flow
+- stage_structure_decisions
+- research_route_decisions
+- per_stage_agent_allocation
+- plan_derivation_trace
+- draft_plan_review
+- experience_pattern_ids
+- experience_rationale
+- nodes
+- edges
+""".strip()
 
     def _phase_f_director_prompt_legacy(self) -> str:
         return """
@@ -713,8 +920,11 @@ Output strict JSON:
       "node_id": "phasef-explore-context",
       "phase": "exploration",
       "goal": "...",
-      "executor_kind": "codex_cli",
+      "executor_kind": "model_agent",
       "command": [],
+      "model_provider": "deterministic | openai_compatible | local_openai_compatible",
+      "model": "provider model id or null",
+      "model_config": {"output_file": "agent_output.json", "output_json": true},
       "prompt": "Worker-specific instruction for this node.",
       "required_evidence": ["diff", "test", "log"],
       "acceptance_criteria": ["Worker may only submit results.", "Overlooker acceptance must cite evidence_ref."],
@@ -722,7 +932,7 @@ Output strict JSON:
       "instantiation_principles": {
         "stage_id": "stage-1",
         "skeleton_node_id": "explore-context",
-        "executor_principle": "why this must be a codex_cli agent, subprocess, or other executor",
+        "executor_principle": "why this must be a model_agent, codex_cli compatibility agent, subprocess, or other executor",
         "prompt_principle": "why the prompt scope and ownership boundary are sufficient",
         "permission_principle": "why read/write/network permissions are minimal and grounded",
         "evidence_principle": "why required_evidence and acceptance_criteria fit this node",
@@ -769,7 +979,7 @@ Rules:
 - The sum of per_stage_agent_allocation.agent_count values must equal agent_allocation.total_agents and the final skeleton node count.
 - Each stage_structure_decisions item must include anti_signals.
 - Each stage must have a research_route_decisions item. If external research would help but network is none, mark external_web as blocked and plan local research only.
-- Node instantiations should normally use executor_kind="codex_cli" because workers are agents.
+- Node instantiations should normally use executor_kind="model_agent" for model-backed agents; use codex_cli only for explicit Codex compatibility.
 - Do not request network access.
 - Do not write sensitive paths.
 - Verification nodes must be read-only.
@@ -944,6 +1154,21 @@ Rules:
                 experience_pattern_ids=pattern_ids,
                 executor_kind=str(raw.get("executor_kind") or "subprocess"),
                 prompt=str(raw.get("prompt") or raw.get("goal") or "Submit evidence for this Director-selected node."),
+                model_provider=(
+                    str(raw.get("model_provider"))
+                    if raw.get("model_provider") is not None
+                    else None
+                ),
+                model=(
+                    str(raw.get("model"))
+                    if raw.get("model") is not None
+                    else None
+                ),
+                model_config=(
+                    raw.get("model_config")
+                    if isinstance(raw.get("model_config"), dict)
+                    else {}
+                ),
             )
             grounding = self._grounding_from_director(raw, node, repo_policy)
             node.sandbox_profile = grounding.sandbox_profile.__dict__

@@ -12,14 +12,16 @@ single worker execution -> WorkerSubmitted -> evidence -> validators -> Overlook
 
 Implemented components:
 
-- `CodexExecWrapper`: subprocess runner with JSONL event parsing.
+- `AgentExecWrapper`: subprocess, Codex CLI, and provider-backed `model_agent` runner with JSONL event parsing.
+- `ModelAgentRegistry`: provider interface for non-Codex model agents, including deterministic offline tests and OpenAI-compatible chat endpoints.
 - `ArtifactStore`: local content-addressable artifact store.
 - `IdentityService`: basic `ActorIdentity` and HMAC `CapabilityToken`.
 - `NodeCapsule` / `EvidenceBundle`: Stage A schemas.
 - `DeterministicValidator`: evidence ref, required artifact, integrity, test, and diff checks.
-- `CodexOverlooker`: separate Codex-backed reviewer; cannot pass without `evidence_ref`.
+- `ModelOverlooker`: default provider-backed reviewer; cannot pass without `evidence_ref`.
+- `CodexOverlooker`: optional Codex-backed reviewer for explicit Codex compatibility tests.
 - `EventLog`: SQLite append-only runtime event log.
-- `StageARuntime`: single-node orchestration.
+- `StageARuntime`: single-node orchestration with `model_agent` Overlooker by default.
 
 Run the demo:
 
@@ -99,7 +101,7 @@ Run Phase C against a complex SWE-bench case with all roles performed by Codex:
 python3 examples/phasec_all_codex_complex_demo.py --split train --scan-limit 120
 ```
 
-This launches the Director Agent, one Codex worker per Director-created node, and the Codex overlooker through `CodexExecWrapper`. The report verifies that every agent session produced Phase C sandbox events and a resource report.
+This launches the Director Agent, one Codex worker per Director-created node, and the Codex overlooker through the shared agent wrapper. The report verifies that every agent session produced Phase C sandbox events and a resource report.
 
 Run the Phase D graph runtime demo:
 
@@ -161,6 +163,25 @@ python3 examples/phase_g_workflow_learning_demo.py
 
 Phase G adds Hermes-style workflow learning after each completed graph run. The runtime records workflow-level observations into the experience library, including selected pattern ids, node outcomes, retry count, Director GraphPatch/replan events, Overlooker fork events, branch candidates, and final integration decisions. Accepted workflows can promote patterns, failed workflows can demote patterns, and workflows that only succeed after dynamic updates create revision proposals so the successful correction path can be reviewed and folded back into the experience library.
 
+Run the Phase H model-agent demos:
+
+```bash
+python3 examples/phase_h_model_agent_unit_demo.py
+python3 examples/phase_h_model_director_demo.py
+python3 examples/phase_h_model_retry_fork_demo.py
+```
+
+Phase H adds provider-backed agent units so Director, Worker, Overlooker, fork advisor, and integration-review sessions no longer need to be hard-bound to Codex CLI. `executor_kind="model_agent"` uses `model_provider`, `model`, and `model_config` on `NodeCapsule`. The offline provider is `deterministic`; real compatible services can use:
+
+```bash
+MODEL_AGENT_PROVIDER=openai_compatible
+MODEL_AGENT_BASE_URL=https://your-compatible-endpoint/v1
+MODEL_AGENT_API_KEY=...
+MODEL_AGENT_MODEL=...
+```
+
+The OpenAI-compatible path calls `/chat/completions` and writes requested structured artifacts through `model_config.output_file`.
+
 Director deliberation skill:
 
 ```text
@@ -218,6 +239,15 @@ Phase G adds:
 - JSONL-backed workflow observation persistence under the same `ExperienceLibrary`.
 - Automatic workflow update proposals after non-paused graph runs.
 - Learning from dynamic workflow updates, including Director GraphPatch application, retry scheduling, Overlooker fork selection, Phase E branch candidates, and final integration gates.
+
+Phase H adds:
+
+- `ModelAgentRequest`, `ModelAgentResult`, and `ModelAgentRegistry`.
+- Deterministic and OpenAI-compatible model providers.
+- `NodeCapsule.model_provider`, `NodeCapsule.model`, and `NodeCapsule.model_config`.
+- `executor_kind="model_agent"` in the shared execution wrapper with artifact, sandbox-event, and resource-report capture.
+- `DirectorAgentV1.plan_with_model_director` for non-Codex Director sessions.
+- `ModelOverlooker` and model-agent paths for fork advisor, Director GraphPatch, and Phase E integration review.
 - Runtime summaries expose `workflow_learning` with the recorded observation and proposed experience updates.
 
 Deferred beyond Phase G:

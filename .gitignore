@@ -31,6 +31,9 @@ phasef_experience_catalog_demo_data/
 phasef_experience_catalog_data/
 phasef_experience_data/
 phaseg_workflow_learning_data/
+phaseh_model_agent_unit_data/
+phaseh_model_director_data/
+phaseh_model_retry_fork_data/
 
 # Local credentials/configuration must not be committed.
 .env

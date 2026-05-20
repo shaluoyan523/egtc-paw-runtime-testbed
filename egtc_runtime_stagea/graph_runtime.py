@@ -10,8 +10,8 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+from .agent_wrapper import AgentExecWrapper
 from .artifact_store import ArtifactStore
-from .codex_wrapper import CodexExecWrapper
 from .compiler import WorkflowCompiler
 from .event_log import EventLog
 from .experience import (
@@ -35,7 +35,7 @@ from .models import (
     WorkerResult,
     to_plain_dict,
 )
-from .overlooker import CodexOverlooker
+from .overlooker import CodexOverlooker, ModelOverlooker
 from .validators import DeterministicValidator
 from .workspace_diff import diff_snapshots, snapshot_workspace
 
@@ -160,10 +160,10 @@ class GraphRuntime:
         )
         self.artifacts = ArtifactStore(self.root / "artifacts", self.identity)
         self.event_log = EventLog(self.root / "events.sqlite3")
-        self.wrapper = CodexExecWrapper(
+        self.wrapper = AgentExecWrapper(
             self.artifacts, self.runtime_actor, self.runtime_token
         )
-        self.director_wrapper = CodexExecWrapper(
+        self.director_wrapper = AgentExecWrapper(
             self.artifacts, self.director_actor, self.director_token
         )
         self.compiler = WorkflowCompiler()
@@ -175,6 +175,12 @@ class GraphRuntime:
         self.validator = DeterministicValidator(self.artifacts)
         self.overlooker = CodexOverlooker(
             self.artifacts, self.runtime_actor, self.runtime_token, self.wrapper
+        )
+        self.model_overlooker = ModelOverlooker(
+            self.artifacts,
+            self.runtime_actor,
+            self.runtime_token,
+            self.wrapper,
         )
 
     def run_graph(
@@ -403,6 +409,21 @@ class GraphRuntime:
         )
         if overlooker_mode in {"codex", "codex_phase_e"}:
             overlooker_report = self.overlooker.review(
+                node,
+                evidence,
+                validator_reports,
+                worker_result,
+                workspace_diff,
+                self.root
+                / "runs"
+                / run_id
+                / "nodes"
+                / node.node_id
+                / f"attempt-{fork_plan.attempt}"
+                / "overlooker",
+            )
+        elif overlooker_mode in {"model_agent", "model_phase_e"}:
+            overlooker_report = self.model_overlooker.review(
                 node,
                 evidence,
                 validator_reports,
@@ -708,7 +729,7 @@ class GraphRuntime:
         record: GraphNodeRecord,
         records: dict[str, GraphNodeRecord],
     ) -> GraphPatch:
-        if spec.director_mode != "codex":
+        if spec.director_mode not in {"codex", "model_agent"}:
             if (
                 spec.phase.upper() != "D"
                 and record.overlooker_recommended_action == "request_director_replan"
@@ -862,10 +883,20 @@ class GraphRuntime:
                 "Director must not change permissions, sandbox policy, or Overlooker gates.",
             ],
             required_evidence=["log", "sandbox_events", "resource_report"],
-            executor_kind="codex_cli",
+            executor_kind="model_agent" if spec.director_mode == "model_agent" else "codex_cli",
             prompt=self._director_patch_prompt(spec.phase),
+            model_provider="deterministic" if spec.director_mode == "model_agent" else None,
+            model_config=(
+                {
+                    "input_files": ["director_runtime_state.json"],
+                    "output_file": "graph_patch.json",
+                    "output_json": True,
+                }
+                if spec.director_mode == "model_agent"
+                else {}
+            ),
             sandbox_profile={
-                "backend": "codex_native",
+                "backend": "model_agent" if spec.director_mode == "model_agent" else "codex_native",
                 "sandbox_mode": "workspace_write",
                 "network": "none",
                 "allowed_read_paths": ["."],
@@ -1336,6 +1367,7 @@ Rules:
             evidence_ref=report["evidence_ref"],
             validator_refs=list(report["validator_refs"]),
             report_ref=report_ref,
+            agent_event_refs=[],
             codex_event_refs=[],
             confidence=str(report["confidence"]),
             cited_evidence=list(report["cited_evidence"]),
@@ -1357,7 +1389,7 @@ Rules:
         return data if isinstance(data, dict) else {}
 
     def _phase_e_enabled(self, phase: str, overlooker_mode: str) -> bool:
-        return phase.upper() == "E" or overlooker_mode in {"phase_e", "codex_phase_e"}
+        return phase.upper() == "E" or overlooker_mode in {"phase_e", "codex_phase_e", "model_phase_e"}
 
     def _is_high_risk(self, node: NodeCapsule) -> bool:
         profile = node.sandbox_profile or {}
@@ -1383,6 +1415,21 @@ Rules:
     ) -> OverlookerReport:
         if second_overlooker_mode == "codex":
             return self.overlooker.review(
+                node,
+                evidence,
+                validator_reports,
+                worker_result,
+                workspace_diff,
+                self.root
+                / "runs"
+                / run_id
+                / "nodes"
+                / node.node_id
+                / f"attempt-{fork_plan.attempt}"
+                / "second-overlooker",
+            )
+        if second_overlooker_mode == "model_agent":
+            return self.model_overlooker.review(
                 node,
                 evidence,
                 validator_reports,
@@ -1763,6 +1810,8 @@ Rules:
         }
         if spec.integration_overlooker_mode in {"codex", "codex_phase_e"}:
             report = self._codex_phase_e_integration_review(run_id, spec, packet)
+        elif spec.integration_overlooker_mode in {"model_agent", "model_phase_e"}:
+            report = self._model_phase_e_integration_review(run_id, spec, packet)
         else:
             report = self._deterministic_phase_e_integration_review(spec, records, packet)
         report_ref = self.artifacts.put_json(
@@ -1936,6 +1985,68 @@ Rules:
             report["failure_type"] = "integration_overlooker_failed"
         return report
 
+    def _model_phase_e_integration_review(
+        self,
+        run_id: str,
+        spec: GraphRunSpec,
+        packet: dict[str, Any],
+    ) -> dict[str, Any]:
+        workspace = self.root / "runs" / run_id / "phase-e-integration-overlooker"
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / "integration_packet.json").write_text(
+            json.dumps(packet, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        node = NodeCapsule(
+            node_id=f"{spec.graph_id}-phase-e-integration-overlooker",
+            phase="Phase E Integration Overlooker",
+            goal="Review all branch candidates after serial nodes complete and decide integration, permission review, or human review.",
+            command=[],
+            acceptance_criteria=[
+                "Integration Overlooker must review every branch_candidate_ref.",
+                "Permission escalation and human review requests belong to the Overlooker.",
+                "Director must not be used for realtime arbitration.",
+            ],
+            required_evidence=["log", "sandbox_events", "resource_report"],
+            executor_kind="model_agent",
+            prompt=self._phase_e_integration_prompt(),
+            model_provider="deterministic",
+            model_config={
+                "input_files": ["integration_packet.json"],
+                "output_file": "integration_overlooker_report.json",
+                "output_json": True,
+            },
+            sandbox_profile={
+                "backend": "model_agent",
+                "sandbox_mode": "workspace_write",
+                "network": "none",
+                "allowed_read_paths": ["."],
+                "allowed_write_paths": ["."],
+                "resource_limits": {
+                    "wall_time_sec": 240,
+                    "memory_mb": 1024,
+                    "disk_mb": 512,
+                    "max_processes": 1,
+                    "max_command_count": 0,
+                },
+            },
+        )
+        result = self.wrapper.run(node, workspace, role="overlooker", run_id=run_id)
+        report = self._read_integration_report(
+            workspace / "integration_overlooker_report.json"
+        )
+        report.setdefault("overlooker_id", result.worker_id)
+        report.setdefault("model_agent_exit_code", result.exit_code)
+        report.setdefault(
+            "model_agent_event_refs", [to_plain_dict(ref) for ref in result.event_refs]
+        )
+        if result.exit_code != 0 and report.get("verdict") == "pass":
+            report["verdict"] = "blocked"
+            report["recommended_action"] = "require_human_review"
+            report["human_review_required"] = True
+            report["failure_type"] = "integration_overlooker_failed"
+        return report
+
     def _phase_e_integration_prompt(self) -> str:
         return """
 You are the EGTC-PAW Phase E Integration Overlooker.
@@ -2088,7 +2199,7 @@ Rules:
         overlooker_mode: str,
     ) -> str:
         default_choice = candidates[-1]
-        if overlooker_mode != "codex" or record.attempts <= 1:
+        if overlooker_mode not in {"codex", "model_agent"} or record.attempts <= 1:
             return default_choice
         advisor_workspace = (
             self.root
@@ -2132,10 +2243,20 @@ Rules:
                 "Fork advisor must write strict JSON.",
             ],
             required_evidence=["log", "sandbox_events", "resource_report"],
-            executor_kind="codex_cli",
+            executor_kind="model_agent" if overlooker_mode == "model_agent" else "codex_cli",
             prompt=self._fork_advisor_prompt(),
+            model_provider="deterministic" if overlooker_mode == "model_agent" else None,
+            model_config=(
+                {
+                    "input_files": ["fork_advisor_input.json"],
+                    "output_file": "fork_decision.json",
+                    "output_json": True,
+                }
+                if overlooker_mode == "model_agent"
+                else {}
+            ),
             sandbox_profile={
-                "backend": "codex_native",
+                "backend": "model_agent" if overlooker_mode == "model_agent" else "codex_native",
                 "sandbox_mode": "workspace_write",
                 "network": "none",
                 "allowed_read_paths": ["."],

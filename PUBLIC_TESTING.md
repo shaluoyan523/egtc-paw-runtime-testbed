@@ -9,9 +9,25 @@ python3 -m compileall egtc_runtime_stagea examples scripts
 python3 examples/phase_g_workflow_learning_demo.py
 python3 examples/phase_e_branch_integration_demo.py
 python3 examples/phase_f_experience_library_demo.py
+python3 examples/phase_h_model_agent_unit_demo.py
+python3 examples/phase_h_model_director_demo.py
+python3 examples/phase_h_model_retry_fork_demo.py
 ```
 
 These commands use deterministic local subprocess workers and do not require external API keys.
+
+The Phase H commands also use the deterministic model provider, so they verify real `model_agent` Director/Worker/Overlooker sessions without requiring Codex or external model credentials.
+
+## Non-Codex Model Path
+
+Nodes can use `executor_kind="model_agent"` with `model_provider`, `model`, and `model_config`. The built-in offline provider is `deterministic`; an OpenAI-compatible provider is available for local or hosted `/chat/completions` services:
+
+```bash
+MODEL_AGENT_PROVIDER=openai_compatible
+MODEL_AGENT_BASE_URL=https://your-compatible-endpoint/v1
+MODEL_AGENT_API_KEY=...
+MODEL_AGENT_MODEL=...
+```
 
 ## Real Codex CLI Path
 
@@ -36,3 +52,4 @@ The current public testbed covers:
 - Phase E branch-candidate integration and Overlooker-owned review requests.
 - Phase F experience-library retrieval and proposal generation.
 - Phase G workflow-level learning after graph completion, including dynamic replan and branch integration events.
+- Phase H provider-backed model-agent units for replacing Codex-only execution paths.

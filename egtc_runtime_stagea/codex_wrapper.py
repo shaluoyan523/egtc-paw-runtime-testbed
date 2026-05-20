@@ -12,6 +12,7 @@ from pathlib import Path
 from .artifact_store import ArtifactStore
 from typing import Any
 
+from .model_agent import ModelAgentRegistry, ModelAgentRequest
 from .models import ActorIdentity, CapabilityToken, NodeCapsule, WorkerResult
 from .sandbox import SandboxRuntime
 
@@ -21,6 +22,7 @@ class CodexExecWrapper:
 
     `executor_kind="subprocess"` runs a local command.
     `executor_kind="codex_cli"` launches a real `codex exec --json` session.
+    `executor_kind="model_agent"` launches a provider-backed model agent.
     """
 
     def __init__(
@@ -50,25 +52,41 @@ class CodexExecWrapper:
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         timed_out = False
         sandbox_events = self.sandbox.start_events(run_id, node, agent_id, spec, cwd)
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=cwd,
-                text=True,
-                capture_output=True,
-                stdin=subprocess.DEVNULL,
-                check=False,
-                timeout=spec.resource_limits.wall_time_sec,
+        network_attempt_count = 0
+        command_count = spec.command_count
+        if node.executor_kind == "model_agent":
+            model_result = self._run_model_agent(
+                node,
+                cwd,
+                role,
+                agent_id,
+                spec.resource_limits.wall_time_sec,
             )
-            exit_code = completed.returncode
-            stdout = completed.stdout
-            stderr = completed.stderr
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            exit_code = 124
-            stdout = exc.stdout if isinstance(exc.stdout, str) else ""
-            stderr = exc.stderr if isinstance(exc.stderr, str) else ""
-            stderr += f"\nSandbox timeout after {spec.resource_limits.wall_time_sec}s\n"
+            exit_code = model_result.exit_code
+            stdout = model_result.stdout
+            stderr = model_result.stderr
+            network_attempt_count = model_result.network_attempt_count
+            command_count = 0
+        else:
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=cwd,
+                    text=True,
+                    capture_output=True,
+                    stdin=subprocess.DEVNULL,
+                    check=False,
+                    timeout=spec.resource_limits.wall_time_sec,
+                )
+                exit_code = completed.returncode
+                stdout = completed.stdout
+                stderr = completed.stderr
+            except subprocess.TimeoutExpired as exc:
+                timed_out = True
+                exit_code = 124
+                stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+                stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+                stderr += f"\nSandbox timeout after {spec.resource_limits.wall_time_sec}s\n"
         usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
         sandbox_events.extend(
             self.sandbox.finish_events(run_id, node, agent_id, exit_code, timed_out)
@@ -79,7 +97,8 @@ class CodexExecWrapper:
             usage_before,
             usage_after,
             timed_out,
-            command_count=spec.command_count,
+            command_count=command_count,
+            network_attempt_count=network_attempt_count,
         )
         parsed_events: list[dict[str, Any]] = []
         event_lines: list[str] = []
@@ -97,7 +116,13 @@ class CodexExecWrapper:
                 parsed_events.append(event)
                 event_lines.append(json.dumps(event, sort_keys=True))
 
-        metadata = {"node_id": node.node_id, f"{role}_id": agent_id}
+        metadata = {
+            "node_id": node.node_id,
+            f"{role}_id": agent_id,
+            "executor_kind": node.executor_kind,
+            "model_provider": node.model_provider,
+            "model": node.model,
+        }
         event_ref = self.artifact_store.put_bytes(
             ("\n".join(event_lines) + "\n").encode("utf-8"),
             "application/jsonl",
@@ -152,6 +177,8 @@ class CodexExecWrapper:
             if not node.command:
                 raise ValueError("subprocess node requires command")
             return node.command
+        if node.executor_kind == "model_agent":
+            return []
         if node.executor_kind != "codex_cli":
             raise ValueError(f"unsupported executor_kind: {node.executor_kind}")
 
@@ -170,6 +197,90 @@ class CodexExecWrapper:
             codex_sandbox,
             prompt,
         ]
+
+    def _run_model_agent(
+        self,
+        node: NodeCapsule,
+        cwd: Path,
+        role: str,
+        agent_id: str,
+        timeout_sec: int,
+    ):
+        config = dict(node.model_config or {})
+        provider_name = node.model_provider or config.get("provider")
+        provider = ModelAgentRegistry().get(str(provider_name) if provider_name else None)
+        output_file = config.get("output_file")
+        request = ModelAgentRequest(
+            node_id=node.node_id,
+            role=role,
+            phase=node.phase,
+            goal=node.goal,
+            prompt=self._model_agent_prompt(node, cwd, config),
+            cwd=cwd,
+            provider=str(provider_name) if provider_name else provider.provider_name,
+            model=node.model or (str(config.get("model")) if config.get("model") else None),
+            system_prompt=(
+                str(config.get("system_prompt"))
+                if isinstance(config.get("system_prompt"), str)
+                else None
+            ),
+            output_file=str(output_file) if output_file else None,
+            output_json=bool(config.get("output_json", config.get("json_output", False))),
+            timeout_sec=timeout_sec,
+            config={
+                **config,
+                "agent_id": agent_id,
+                "executor_kind": node.executor_kind,
+            },
+        )
+        return provider.run(request)
+
+    def _model_agent_prompt(
+        self,
+        node: NodeCapsule,
+        cwd: Path,
+        config: dict[str, Any],
+    ) -> str:
+        parts = [
+            f"Node id: {node.node_id}",
+            f"Phase: {node.phase}",
+            f"Goal: {node.goal}",
+            "Acceptance criteria:",
+            json.dumps(node.acceptance_criteria, indent=2, sort_keys=True),
+            "Required evidence:",
+            json.dumps(node.required_evidence, indent=2, sort_keys=True),
+            "Instruction:",
+            node.prompt or node.goal,
+        ]
+        input_files = config.get("input_files", [])
+        if isinstance(input_files, list) and input_files:
+            max_bytes = int(config.get("max_input_file_bytes", 200_000))
+            parts.append("Workspace input files:")
+            for item in input_files:
+                rel_path = str(item)
+                path = self._safe_workspace_path(cwd, rel_path)
+                if not path.exists():
+                    parts.append(f"\n# {rel_path}\n<missing>")
+                    continue
+                content = path.read_text(encoding="utf-8", errors="replace")
+                if len(content.encode("utf-8")) > max_bytes:
+                    content = content.encode("utf-8")[:max_bytes].decode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                    content += "\n<truncated>"
+                parts.append(f"\n# {rel_path}\n{content}")
+        return "\n\n".join(parts)
+
+    def _safe_workspace_path(self, cwd: Path, relative_path: str) -> Path:
+        path = Path(relative_path)
+        if path.is_absolute():
+            raise ValueError("model agent input_files must be relative to workspace")
+        resolved = (cwd / path).resolve()
+        cwd_resolved = cwd.resolve()
+        if cwd_resolved != resolved and cwd_resolved not in resolved.parents:
+            raise ValueError("model agent input_files cannot escape workspace")
+        return resolved
 
     def _find_codex_binary(self) -> str:
         configured = os.environ.get("CODEX_BIN")

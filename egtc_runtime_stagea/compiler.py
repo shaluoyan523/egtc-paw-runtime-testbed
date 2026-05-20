@@ -173,12 +173,62 @@ class WorkflowCompiler:
                     node.node_id,
                 )
             )
+        if node.executor_kind == "model_agent":
+            findings.extend(self._check_model_agent_node(node))
+        return findings
+
+    def _check_model_agent_node(self, node: NodeCapsule) -> list[CompilerFinding]:
+        findings: list[CompilerFinding] = []
+        provider = node.model_provider or node.model_config.get("provider")
+        if not isinstance(provider, str) or not provider.strip():
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "model_agent_missing_provider",
+                    "model_agent nodes must declare model_provider or model_config.provider.",
+                    node.node_id,
+                )
+            )
+        if node.command:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "model_agent_command_not_allowed",
+                    "model_agent nodes must not also declare a subprocess command.",
+                    node.node_id,
+                )
+            )
+        if not node.prompt:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "model_agent_missing_prompt",
+                    "model_agent nodes must include a prompt.",
+                    node.node_id,
+                )
+            )
+        output_file = node.model_config.get("output_file")
+        if output_file is not None and (
+            not isinstance(output_file, str)
+            or not output_file.strip()
+            or output_file.startswith("/")
+            or ".." in PurePosixPath(output_file).parts
+        ):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "model_agent_invalid_output_file",
+                    "model_agent model_config.output_file must be a relative workspace path.",
+                    node.node_id,
+                )
+            )
         return findings
 
     def _check_director_deliberation(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
         findings: list[CompilerFinding] = []
-        if blueprint.director_mode != "codex":
+        if blueprint.director_mode not in {"codex", "model_agent"}:
             return findings
+        director_label = "Agent Director"
         skeleton = blueprint.workflow_skeleton
         total_agents = skeleton.agent_allocation.get("total_agents")
         if not isinstance(total_agents, int) or total_agents != len(skeleton.nodes):
@@ -186,7 +236,7 @@ class WorkflowCompiler:
                 CompilerFinding(
                     "error",
                     "director_agent_allocation_mismatch",
-                    "Codex Director must make total_agents equal the selected skeleton node count.",
+                    f"{director_label} must make total_agents equal the selected skeleton node count.",
                 )
             )
         alternatives = skeleton.alternative_skeletons
@@ -195,7 +245,7 @@ class WorkflowCompiler:
                 CompilerFinding(
                     "error",
                     "director_missing_alternative_comparison",
-                    "Codex Director must compare at least three candidate skeletons before selecting one.",
+                    f"{director_label} must compare at least three candidate skeletons before selecting one.",
                 )
             )
         selected_count = sum(
@@ -206,7 +256,7 @@ class WorkflowCompiler:
                 CompilerFinding(
                     "error",
                     "director_invalid_selected_alternative",
-                    "Codex Director must mark exactly one alternative skeleton as selected.",
+                    f"{director_label} must mark exactly one alternative skeleton as selected.",
                 )
             )
         if len(skeleton.deliberation_trace) < 2:
@@ -214,7 +264,7 @@ class WorkflowCompiler:
                 CompilerFinding(
                     "error",
                     "director_missing_deliberation_trace",
-                    "Codex Director must provide a deliberation trace comparing evidence and task signals.",
+                    f"{director_label} must provide a deliberation trace comparing evidence and task signals.",
                 )
             )
         scaling = skeleton.scaling_policy
@@ -230,7 +280,7 @@ class WorkflowCompiler:
                 CompilerFinding(
                     "error",
                     "director_missing_scaling_policy",
-                    f"Codex Director scaling_policy is missing keys: {missing}",
+                    f"{director_label} scaling_policy is missing keys: {missing}",
                 )
             )
         elif not scaling.get("scale_triggers") or not scaling.get("expansion_strategy"):
@@ -238,7 +288,7 @@ class WorkflowCompiler:
                 CompilerFinding(
                     "error",
                     "director_scaling_policy_too_weak",
-                    "Codex Director scaling_policy must include non-empty scale triggers and expansion strategy.",
+                    f"{director_label} scaling_policy must include non-empty scale triggers and expansion strategy.",
                 )
             )
         if len(skeleton.experience_rationale) < 2:
@@ -246,7 +296,7 @@ class WorkflowCompiler:
                 CompilerFinding(
                     "error",
                     "director_missing_experience_rationale",
-                    "Codex Director must explain why selected experience patterns fit the task.",
+                    f"{director_label} must explain why selected experience patterns fit the task.",
                 )
             )
         findings.extend(self._check_director_skill_usage(blueprint))

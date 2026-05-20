@@ -53,6 +53,7 @@ Use this skill before emitting a workflow plan. The Director must first build pl
    - `draft_plan_review.reviewed_draft_fields` must name the draft fields reviewed, and `draft_plan_review.applied_changes` must be consistent with the final node/edge/instantiation set.
    - Verification and overlooker stages must be read-only unless the repo policy explicitly grounds writes.
    - Experience patterns may shape structure but must not request network, permissions, sandbox changes, secrets, or sensitive writes.
+   - Model-backed agents should normally use `executor_kind=model_agent` with explicit `model_provider`, optional `model`, and bounded `model_config`. Use `codex_cli` only when the task explicitly requires Codex compatibility, and use `subprocess` only for deterministic local commands.
 
 ## Required Output Fields
 

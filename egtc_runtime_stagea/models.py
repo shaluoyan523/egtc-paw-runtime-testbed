@@ -51,6 +51,9 @@ class NodeCapsule:
     prompt: str | None = None
     codex_binary: str | None = None
     codex_sandbox: str = "workspace-write"
+    model_provider: str | None = None
+    model: str | None = None
+    model_config: dict[str, Any] = field(default_factory=dict)
     sandbox_profile: dict[str, Any] | None = None
 
 
@@ -93,6 +96,7 @@ class OverlookerReport:
     evidence_ref: str | None
     validator_refs: list[str]
     report_ref: ArtifactRef | None = None
+    agent_event_refs: list[ArtifactRef] = field(default_factory=list)
     codex_event_refs: list[ArtifactRef] = field(default_factory=list)
     confidence: str = "medium"
     cited_evidence: list[str] = field(default_factory=list)

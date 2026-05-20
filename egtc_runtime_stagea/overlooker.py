@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from .artifact_store import ArtifactStore
-from .codex_wrapper import CodexExecWrapper
+from .agent_wrapper import AgentExecWrapper
 from .models import (
     ActorIdentity,
     CapabilityToken,
@@ -25,7 +25,7 @@ class CodexOverlooker:
         artifact_store: ArtifactStore,
         actor: ActorIdentity,
         token: CapabilityToken,
-        launcher: CodexExecWrapper,
+        launcher: AgentExecWrapper,
     ) -> None:
         self.artifact_store = artifact_store
         self.actor = actor
@@ -57,19 +57,7 @@ class CodexOverlooker:
             encoding="utf-8",
         )
 
-        overlooker_node = NodeCapsule(
-            node_id=f"{node.node_id}-overlooker",
-            phase="Phase A Overlooker",
-            goal="Review the acceptance packet and write overlooker_report.json.",
-            command=[],
-            acceptance_criteria=[
-                "Overlooker must cite evidence_ref.",
-                "Overlooker must fail if deterministic validators failed.",
-                "Overlooker must write a strict JSON report.",
-            ],
-            executor_kind="codex_cli",
-            prompt=self._prompt(),
-        )
+        overlooker_node = self._build_overlooker_node(node)
         overlooker_run = self.launcher.run(
             overlooker_node, overlooker_workspace, role="overlooker"
         )
@@ -95,6 +83,7 @@ class CodexOverlooker:
             evidence_ref=normalized.get("evidence_ref"),
             validator_refs=normalized["validator_refs"],
             report_ref=report_ref,
+            agent_event_refs=overlooker_run.event_refs,
             codex_event_refs=overlooker_run.event_refs,
             confidence=str(normalized["confidence"]),
             cited_evidence=list(normalized["cited_evidence"]),
@@ -159,6 +148,21 @@ Pass only when:
 
 Fail otherwise and choose a recommended_action. Do not clone repositories. Do not run external tests.
 """.strip()
+
+    def _build_overlooker_node(self, node: NodeCapsule) -> NodeCapsule:
+        return NodeCapsule(
+            node_id=f"{node.node_id}-overlooker",
+            phase="Phase A Overlooker",
+            goal="Review the acceptance packet and write overlooker_report.json.",
+            command=[],
+            acceptance_criteria=[
+                "Overlooker must cite evidence_ref.",
+                "Overlooker must fail if deterministic validators failed.",
+                "Overlooker must write a strict JSON report.",
+            ],
+            executor_kind="codex_cli",
+            prompt=self._prompt(),
+        )
 
     def _read_report(self, report_path: Path) -> dict[str, object]:
         if not report_path.exists():
@@ -285,3 +289,60 @@ Fail otherwise and choose a recommended_action. Do not clone repositories. Do no
             "recommended_action": recommended_action,
             "release_overlooker": False,
         }
+
+
+class ModelOverlooker(CodexOverlooker):
+    """Provider-backed Overlooker using the same acceptance normalization."""
+
+    def __init__(
+        self,
+        artifact_store: ArtifactStore,
+        actor: ActorIdentity,
+        token: CapabilityToken,
+        launcher: AgentExecWrapper,
+        *,
+        model_provider: str = "deterministic",
+        model: str | None = None,
+        model_config: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(artifact_store, actor, token, launcher)
+        self.model_provider = model_provider
+        self.model = model
+        self.model_config = dict(model_config or {})
+
+    def _build_overlooker_node(self, node: NodeCapsule) -> NodeCapsule:
+        return NodeCapsule(
+            node_id=f"{node.node_id}-overlooker",
+            phase="Phase A Model Overlooker",
+            goal="Review the acceptance packet and write overlooker_report.json.",
+            command=[],
+            acceptance_criteria=[
+                "Overlooker must cite evidence_ref.",
+                "Overlooker must fail if deterministic validators failed.",
+                "Overlooker must write a strict JSON report.",
+            ],
+            executor_kind="model_agent",
+            prompt=self._prompt(),
+            model_provider=self.model_provider,
+            model=self.model,
+            model_config={
+                "input_files": ["acceptance_packet.json"],
+                "output_file": "overlooker_report.json",
+                "output_json": True,
+                **self.model_config,
+            },
+            sandbox_profile={
+                "backend": "model_agent",
+                "sandbox_mode": "workspace_write",
+                "network": "none",
+                "allowed_read_paths": ["."],
+                "allowed_write_paths": ["."],
+                "resource_limits": {
+                    "wall_time_sec": 120,
+                    "memory_mb": 1024,
+                    "disk_mb": 256,
+                    "max_processes": 1,
+                    "max_command_count": 0,
+                },
+            },
+        )

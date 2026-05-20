@@ -5,19 +5,27 @@ import uuid
 from pathlib import Path
 
 from .artifact_store import ArtifactStore
-from .codex_wrapper import CodexExecWrapper
+from .agent_wrapper import AgentExecWrapper
 from .event_log import EventLog
 from .evidence import EvidenceCollector
 from .identity import IdentityService
 from .models import NodeCapsule, NodeState, to_plain_dict
-from .overlooker import CodexOverlooker
+from .overlooker import CodexOverlooker, ModelOverlooker
 from .validators import DeterministicValidator
 from .workspace_diff import diff_snapshots, snapshot_workspace
 
 
 class StageARuntime:
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        overlooker_mode: str = "model_agent",
+        model_provider: str = "deterministic",
+        model: str | None = None,
+    ) -> None:
         self.root = root
+        self.overlooker_mode = overlooker_mode
         self.root.mkdir(parents=True, exist_ok=True)
         self.identity = IdentityService()
         self.runtime_actor = self.identity.actor("runtime-stagea", "runtime")
@@ -27,16 +35,28 @@ class StageARuntime:
         )
         self.artifacts = ArtifactStore(self.root / "artifacts", self.identity)
         self.event_log = EventLog(self.root / "events.sqlite3")
-        self.wrapper = CodexExecWrapper(
+        self.wrapper = AgentExecWrapper(
             self.artifacts, self.runtime_actor, self.runtime_token
         )
         self.collector = EvidenceCollector(
             self.artifacts, self.runtime_actor, self.runtime_token
         )
         self.validator = DeterministicValidator(self.artifacts)
-        self.overlooker = CodexOverlooker(
-            self.artifacts, self.runtime_actor, self.runtime_token, self.wrapper
-        )
+        if overlooker_mode == "codex":
+            self.overlooker = CodexOverlooker(
+                self.artifacts, self.runtime_actor, self.runtime_token, self.wrapper
+            )
+        elif overlooker_mode == "model_agent":
+            self.overlooker = ModelOverlooker(
+                self.artifacts,
+                self.runtime_actor,
+                self.runtime_token,
+                self.wrapper,
+                model_provider=model_provider,
+                model=model,
+            )
+        else:
+            raise ValueError("overlooker_mode must be 'model_agent' or 'codex'")
 
     def run_node(self, node: NodeCapsule) -> dict[str, object]:
         run_id = f"run-{uuid.uuid4().hex[:12]}"
