@@ -38,11 +38,19 @@ Use this skill before emitting a workflow plan. The Director must first build pl
    - Compare at least three complete plans: small, selected, and larger-scalable.
    - Each candidate must include stage mapping, estimated agents, strengths, weaknesses, and rejection reason if not selected.
 
-6. Emit the final workflow only after the above steps.
+6. Feed the draft plan back into the Director for structural self-review.
+   - Before final output, construct a `draft_plan` containing the selected linear stages, structure decisions, agent allocation, draft final nodes, draft edges, draft node instantiations, and selected experience pattern ids.
+   - Review the draft as if it came from another Director. Judge whether the structure is scientifically reasonable for the task, whether the node count and agent allocation are sufficient, whether dependencies and handoffs are coherent, whether verification/overlooker coverage is strong enough, and whether any stage needs missing research, synthesis, integration, or retry/replan support.
+   - Compare the draft against the rejected alternatives and the scale triggers. Do not merely repeat the original rationale.
+   - Emit `draft_plan_review` with findings, missing capabilities, recommended changes, applied changes, rejected changes, and a final structural verdict.
+   - Apply required corrections to the final workflow before emitting final nodes. If no changes are needed, say why the existing structure is sufficient.
+
+7. Emit the final workflow only after the above steps.
    - The final `workflow_skeleton.nodes` and `node_instantiations` must be traceable to the per-stage decisions.
    - Every final skeleton node must include `node_selection_principles`, explaining why that node exists, why that role was chosen, why its dependency position is correct, why it is parallel/serial/joined, and why its expected outputs are sufficient.
    - Every node instantiation must include `instantiation_principles`, explaining why the executor, prompt scope, evidence contract, handoff, and permission grounding were selected.
    - `plan_derivation_trace` must cite the decision basis ids used to derive each final node.
+   - `draft_plan_review.reviewed_draft_fields` must name the draft fields reviewed, and `draft_plan_review.applied_changes` must be consistent with the final node/edge/instantiation set.
    - Verification and overlooker stages must be read-only unless the repo policy explicitly grounds writes.
    - Experience patterns may shape structure but must not request network, permissions, sandbox changes, secrets, or sensitive writes.
 
@@ -55,6 +63,7 @@ Add these fields under `workflow_skeleton` in addition to the runtime-required f
 - `research_route_decisions`: explicit research-needed/research-not-needed decisions.
 - `per_stage_agent_allocation`: agent counts and role assignments per stage.
 - `plan_derivation_trace`: concise trace connecting stage decisions to final nodes.
+- `draft_plan_review`: Director self-review of the draft plan after planning and task decomposition, before final workflow emission.
 
 Each `workflow_skeleton.nodes[*]` record must include `node_selection_principles`. Each `node_instantiations[*]` record must include `instantiation_principles`.
 
@@ -73,6 +82,7 @@ Reject your own plan and revise before output if:
 - Any stage, structure decision, research decision, allocation, or final-node derivation lacks `decision_basis`.
 - Any final skeleton node lacks `node_selection_principles`.
 - Any node instantiation lacks `instantiation_principles`.
+- `draft_plan_review` is missing, reviews no draft fields, has no structural findings, or does not state applied/rejected changes.
 - A node exists without a clear role, dependency, parallelism, evidence, and correction principle.
 - A `decision_basis` has no correction target for future replanning.
 - The selected plan is just the first plan considered.

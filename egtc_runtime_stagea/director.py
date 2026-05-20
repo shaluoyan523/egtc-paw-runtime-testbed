@@ -271,6 +271,7 @@ class DirectorAgentV1:
                 "Director must first decompose the task into a linear requirement flow.",
                 "Director must choose the structure and agent allocation for each linear stage before creating final nodes.",
                 "Director must decide whether each specialized or uncertain stage needs research, and must mark blocked external research when network is unavailable.",
+                "Director must feed the draft plan back into itself for structural review before final output.",
                 "Director must define a scaling policy for tasks that exceed the current corpus.",
                 "Director must cite selected experience pattern ids.",
                 "Director must not request network or sandbox/permission expansion.",
@@ -300,7 +301,7 @@ class DirectorAgentV1:
             ],
             required_evidence=["log", "sandbox_events", "resource_report"],
             executor_kind="codex_cli",
-            prompt=self._phase_f_director_prompt(),
+            prompt=self._phase_f_director_prompt_short(),
             codex_binary=codex_binary,
             sandbox_profile={
                 "backend": "codex_native",
@@ -341,7 +342,78 @@ class DirectorAgentV1:
         blueprint.director_session_id = director_result.worker_id
         return blueprint
 
+    def _phase_f_director_prompt_short(self) -> str:
+        return """
+You are the EGTC-PAW Phase F Director Agent.
+
+Read ./director_input.json, then read these local skill files before planning:
+- ./skills/director-deliberative-planning/SKILL.md
+- ./skills/director-deliberative-planning/references/planning_schema.md
+
+Create ./director_output.json as strict JSON only. Do not write markdown.
+
+Planning order:
+1. Diagnose the task and retrieve applicable experience patterns from director_input.experience_candidates.
+2. Build a linear requirement flow.
+3. Choose stage structures, research route decisions, and per-stage agent allocation.
+4. Compare at least three complete skeleton candidates: small, selected, and larger-scalable.
+5. Draft final nodes, edges, and node instantiations.
+6. Feed that draft plan back into yourself for structural review. Review it as if another Director created it.
+7. Apply necessary corrections, then emit the final workflow.
+
+director_output.json must contain exactly these top-level objects:
+- director_skill_usage
+- task_diagnosis
+- workflow_skeleton
+- node_instantiations
+
+Use the schema in planning_schema.md for exact field shapes. Required workflow_skeleton fields:
+- topology
+- agent_allocation
+- alternative_skeletons
+- scaling_policy
+- deliberation_trace
+- linear_requirement_flow
+- stage_structure_decisions
+- research_route_decisions
+- per_stage_agent_allocation
+- plan_derivation_trace
+- draft_plan_review
+- experience_pattern_ids
+- experience_rationale
+- nodes
+- edges
+
+draft_plan_review requirements:
+- reviewed_draft_fields must include linear_requirement_flow, stage_structure_decisions, research_route_decisions, per_stage_agent_allocation, nodes, edges, node_instantiations, and experience_pattern_ids.
+- structural_verdict must be pass, revise_before_final, or needs_human_review.
+- structure_findings must be non-empty; use an info finding if the draft is already structurally sound.
+- every structure finding must include decision_basis.
+- recommended_changes and applied_changes must be non-empty.
+- rejected_changes must be a list, even when empty.
+- final_structure_summary must explain why the final graph is structurally sound after review.
+
+director_skill_usage must copy hashes exactly from director_input.director_skill and include applied_required_fields containing:
+linear_requirement_flow, stage_structure_decisions, research_route_decisions, per_stage_agent_allocation, plan_derivation_trace, node_selection_principles, instantiation_principles, draft_plan_review, decision_basis.
+
+Rules:
+- Use only pattern ids present in director_input.experience_candidates.
+- Do not assume a fixed number of agents; derive counts from complexity, uncertainty, dependency breadth, validation burden, risk, and evidence.
+- The current task may need 1 agent, 4 agents, dozens of agents, or a staged plan that can grow toward hundreds; include scale triggers.
+- Every planning record, node_selection_principles object, instantiation_principles object, and draft_plan_review structure finding must include decision_basis.
+- The sum of per_stage_agent_allocation.agent_count values must equal agent_allocation.total_agents and the final skeleton node count.
+- Every final node id must appear in plan_derivation_trace.
+- Node instantiations should normally use executor_kind="codex_cli" because workers are agents.
+- Do not request network access.
+- Do not write sensitive paths.
+- Verification nodes must be read-only.
+- Do not clone repositories. Do not run tests.
+""".strip()
+
     def _phase_f_director_prompt(self) -> str:
+        return self._phase_f_director_prompt_short()
+
+    def _phase_f_director_prompt_legacy(self) -> str:
         return """
 You are the EGTC-PAW Phase F Director Agent.
 
@@ -366,6 +438,7 @@ You must choose and apply experience-library patterns yourself. This includes:
 - assigning experience_pattern_ids to the skeleton and each node.
 - comparing multiple candidate workflow skeletons before committing.
 - defining how the workflow should scale if the task needs tens or hundreds of agents.
+- feeding the draft workflow back into yourself for structural review before finalizing, then applying necessary corrections.
 
 Output strict JSON:
 {
@@ -384,6 +457,7 @@ Output strict JSON:
       "plan_derivation_trace",
       "node_selection_principles",
       "instantiation_principles",
+      "draft_plan_review",
       "decision_basis"
     ]
   },
@@ -542,6 +616,63 @@ Output strict JSON:
     "plan_derivation_trace": [
       "basis-structure-stage-1: stage-1 selected parallel_exploration, producing final nodes explore-a and explore-b"
     ],
+    "draft_plan_review": {
+      "review_id": "draft-review-1",
+      "reviewed_draft_fields": [
+        "linear_requirement_flow",
+        "stage_structure_decisions",
+        "research_route_decisions",
+        "per_stage_agent_allocation",
+        "nodes",
+        "edges",
+        "node_instantiations",
+        "experience_pattern_ids"
+      ],
+      "structural_verdict": "pass | revise_before_final | needs_human_review",
+      "structure_findings": [
+        {
+          "finding_id": "draft-finding-1",
+          "severity": "info | warning | error",
+          "target": "workflow_skeleton.nodes[final-node-id]",
+          "finding": "what the Director noticed after feeding the draft plan back to itself",
+          "recommendation": "what should change or why no change is needed",
+          "decision_basis": {
+            "basis_id": "basis-draft-review-1",
+            "source_refs": ["draft_plan.nodes", "draft_plan.edges", "experience:pattern-id"],
+            "matched_signals": ["structural issue or sufficiency signal"],
+            "assumptions": ["what must hold for the final structure"],
+            "invalidation_signals": ["what would prove this review wrong"],
+            "confidence": "low | medium | high",
+            "correction_target": "workflow_skeleton.nodes[final-node-id]",
+            "correction_action": "add, remove, split, merge, reorder, or leave the node unchanged"
+          }
+        }
+      ],
+      "missing_capabilities": ["capabilities missing from the draft, or none"],
+      "recommended_changes": [
+        {
+          "change_id": "draft-change-1",
+          "change_type": "add_node | remove_node | split_node | merge_nodes | reorder_edge | change_role | change_evidence | change_agent_count | no_change",
+          "target": "workflow_skeleton.nodes",
+          "rationale": "why the draft needs this change, or why no change is needed"
+        }
+      ],
+      "applied_changes": [
+        {
+          "change_id": "draft-change-1",
+          "applied": true,
+          "final_targets": ["workflow_skeleton.nodes[final-node-id]"],
+          "result": "how the final workflow reflects this review"
+        }
+      ],
+      "rejected_changes": [
+        {
+          "change_id": "draft-change-2",
+          "reason": "why a considered change was not applied"
+        }
+      ],
+      "final_structure_summary": "why the final graph is structurally sound after review"
+    },
     "experience_pattern_ids": ["..."],
     "experience_rationale": ["..."],
     "nodes": [
@@ -629,6 +760,9 @@ Rules:
 - Compare at least three candidate skeletons, including a small conservative plan, a medium plan, and a larger scalable plan.
 - Pick the smallest plan that has enough coverage, but explicitly describe when it should be expanded.
 - Every final node must be traceable to a linear_requirement_flow stage through per_stage_agent_allocation and plan_derivation_trace.
+- Before finalizing nodes, create a draft plan object internally, review it as if another Director created it, and emit workflow_skeleton.draft_plan_review.
+- draft_plan_review must cover planning fields, final nodes, edges, node instantiations, and selected experience patterns.
+- draft_plan_review must include structure_findings, recommended_changes, applied_changes, rejected_changes, and final_structure_summary.
 - Every planning record must include decision_basis with source_refs, matched_signals, assumptions, invalidation_signals, confidence, correction_target, and correction_action.
 - Every workflow_skeleton.nodes item must include node_selection_principles explaining why this node, role, dependency position, expected outputs, and parallel/serial placement were selected.
 - Every node_instantiations item must include instantiation_principles explaining why this executor, prompt scope, evidence contract, handoff, and permission grounding were selected.
@@ -767,6 +901,11 @@ Rules:
             plan_derivation_trace=[
                 str(item) for item in raw_skeleton.get("plan_derivation_trace", [])
             ],
+            draft_plan_review=(
+                raw_skeleton.get("draft_plan_review")
+                if isinstance(raw_skeleton.get("draft_plan_review"), dict)
+                else {}
+            ),
             experience_pattern_ids=self._filter_known_patterns(
                 raw_skeleton.get("experience_pattern_ids", selected_pattern_ids),
                 selected_pattern_ids,

@@ -50,6 +50,7 @@ def main() -> int:
         "research_route_decisions": blueprint.workflow_skeleton.research_route_decisions,
         "per_stage_agent_allocation": blueprint.workflow_skeleton.per_stage_agent_allocation,
         "plan_derivation_trace": blueprint.workflow_skeleton.plan_derivation_trace,
+        "draft_plan_review": blueprint.workflow_skeleton.draft_plan_review,
         "experience_rationale": blueprint.workflow_skeleton.experience_rationale,
         "experience_pattern_ids": blueprint.experience_pattern_ids,
         "node_count": len(blueprint.workflow_skeleton.nodes),
@@ -108,6 +109,19 @@ def main() -> int:
     ]
     node_principles = list(output["node_selection_principles"].values())
     instantiation_principles = list(output["instantiation_principles"].values())
+    draft_review = output["draft_plan_review"]
+    reviewed_fields = set(draft_review.get("reviewed_draft_fields", []))
+    required_reviewed_fields = {
+        "linear_requirement_flow",
+        "stage_structure_decisions",
+        "research_route_decisions",
+        "per_stage_agent_allocation",
+        "nodes",
+        "edges",
+        "node_instantiations",
+        "experience_pattern_ids",
+    }
+    review_findings = draft_review.get("structure_findings", [])
     return 0 if (
         compiled.accepted
         and output["director_mode"] == "codex"
@@ -132,6 +146,14 @@ def main() -> int:
         and all(has_basis(item) for item in output["research_route_decisions"])
         and all(has_basis(item) for item in output["per_stage_agent_allocation"])
         and all(has_basis(item) for item in allocation_agents)
+        and required_reviewed_fields.issubset(reviewed_fields)
+        and draft_review.get("structural_verdict") in {"pass", "revise_before_final"}
+        and review_findings
+        and all(has_basis(item) for item in review_findings if isinstance(item, dict))
+        and draft_review.get("recommended_changes")
+        and draft_review.get("applied_changes")
+        and isinstance(draft_review.get("rejected_changes"), list)
+        and draft_review.get("final_structure_summary")
         and len(node_principles) == output["node_count"]
         and all(has_basis(item) for item in node_principles)
         and all(item.get("selected_for") for item in node_principles if isinstance(item, dict))

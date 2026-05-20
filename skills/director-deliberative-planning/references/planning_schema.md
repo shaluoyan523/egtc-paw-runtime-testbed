@@ -184,6 +184,79 @@ List of concise trace strings:
 
 The trace must connect the linear stages to final node ids.
 
+## draft_plan_review
+
+After planning and task decomposition, but before final workflow emission, the Director must feed the draft plan back into itself for structural review. Emit the review under `workflow_skeleton.draft_plan_review`:
+
+```json
+{
+  "review_id": "draft-review-1",
+  "reviewed_draft_fields": [
+    "linear_requirement_flow",
+    "stage_structure_decisions",
+    "research_route_decisions",
+    "per_stage_agent_allocation",
+    "nodes",
+    "edges",
+    "node_instantiations",
+    "experience_pattern_ids"
+  ],
+  "structural_verdict": "pass|revise_before_final|needs_human_review",
+  "structure_findings": [
+    {
+      "finding_id": "draft-finding-1",
+      "severity": "info|warning|error",
+      "target": "workflow_skeleton.nodes[verify]",
+      "finding": "Verification has no explicit handoff from implementation evidence.",
+      "recommendation": "Add or reorder a verification node that consumes implementation outputs.",
+      "decision_basis": {
+        "basis_id": "basis-draft-review-1",
+        "source_refs": ["draft_plan.nodes", "per_stage_agent_allocation[stage-3]"],
+        "matched_signals": ["requires test evidence", "implementation writes"],
+        "assumptions": ["Verifier can run read-only after implementation."],
+        "invalidation_signals": ["Tests require write access or generated fixtures."],
+        "confidence": "medium",
+        "correction_target": "workflow_skeleton.nodes[verify]",
+        "correction_action": "Add, remove, split, merge, or reorder the verification node."
+      }
+    }
+  ],
+  "missing_capabilities": ["synthesis", "integration_review"],
+  "recommended_changes": [
+    {
+      "change_id": "draft-change-1",
+      "change_type": "add_node|remove_node|split_node|merge_nodes|reorder_edge|change_role|change_evidence|change_agent_count|no_change",
+      "target": "workflow_skeleton.nodes",
+      "rationale": "Why the draft needs or does not need this change."
+    }
+  ],
+  "applied_changes": [
+    {
+      "change_id": "draft-change-1",
+      "applied": true,
+      "final_targets": ["workflow_skeleton.nodes[verify]"],
+      "result": "Final workflow includes a read-only verification node after implementation."
+    }
+  ],
+  "rejected_changes": [
+    {
+      "change_id": "draft-change-2",
+      "reason": "Rejected because it would exceed current task scope or duplicate another node."
+    }
+  ],
+  "final_structure_summary": "Short statement explaining why the final graph is now structurally sound."
+}
+```
+
+Rules:
+
+- `reviewed_draft_fields` must name the planning, node, edge, instantiation, and experience fields that were reviewed.
+- `structure_findings` must contain at least one finding. If no flaw is found, use an `info` finding that states what was checked and why no change is needed.
+- Every structure finding must include `decision_basis`.
+- `recommended_changes` and `applied_changes` must be non-empty. Use `change_type=no_change` only when the review found the draft already sufficient.
+- If a change is applied, the final workflow fields must reflect it. If a change is rejected, `rejected_changes` must explain why.
+- `structural_verdict=needs_human_review` should be used only when the Director cannot make a safe structural correction under the current policy.
+
 ## workflow_skeleton.nodes node_selection_principles
 
 Every final skeleton node must include `node_selection_principles`:

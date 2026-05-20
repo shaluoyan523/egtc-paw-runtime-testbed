@@ -251,6 +251,7 @@ class WorkflowCompiler:
             )
         findings.extend(self._check_director_skill_usage(blueprint))
         findings.extend(self._check_director_planning_skill(skeleton))
+        findings.extend(self._check_director_draft_plan_review(skeleton))
         findings.extend(self._check_node_selection_principles(blueprint))
         return findings
 
@@ -307,6 +308,7 @@ class WorkflowCompiler:
             "plan_derivation_trace",
             "node_selection_principles",
             "instantiation_principles",
+            "draft_plan_review",
             "decision_basis",
         }
         applied = usage.get("applied_required_fields")
@@ -525,6 +527,167 @@ class WorkflowCompiler:
                     "error",
                     "director_plan_trace_missing_nodes",
                     f"plan_derivation_trace must mention every final node id: {missing_from_trace}",
+                )
+            )
+        return findings
+
+    def _check_director_draft_plan_review(self, skeleton) -> list[CompilerFinding]:
+        review = skeleton.draft_plan_review
+        if not isinstance(review, dict) or not review:
+            return [
+                CompilerFinding(
+                    "error",
+                    "director_missing_draft_plan_review",
+                    "Codex Director must feed the draft plan back into itself and emit draft_plan_review.",
+                )
+            ]
+        findings: list[CompilerFinding] = []
+        required = {
+            "review_id",
+            "reviewed_draft_fields",
+            "structural_verdict",
+            "structure_findings",
+            "missing_capabilities",
+            "recommended_changes",
+            "applied_changes",
+            "rejected_changes",
+            "final_structure_summary",
+        }
+        missing = sorted(required - set(review))
+        if missing:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_draft_plan_review_missing_keys",
+                    f"draft_plan_review is missing keys: {missing}",
+                )
+            )
+        reviewed_fields = review.get("reviewed_draft_fields")
+        required_reviewed_fields = {
+            "linear_requirement_flow",
+            "stage_structure_decisions",
+            "research_route_decisions",
+            "per_stage_agent_allocation",
+            "nodes",
+            "edges",
+            "node_instantiations",
+            "experience_pattern_ids",
+        }
+        if not isinstance(reviewed_fields, list) or not required_reviewed_fields.issubset(
+            {str(item) for item in reviewed_fields}
+        ):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_draft_plan_review_incomplete_scope",
+                    "draft_plan_review.reviewed_draft_fields must cover planning fields, nodes, edges, instantiations, and experience ids.",
+                )
+            )
+        verdict = review.get("structural_verdict")
+        if verdict not in {"pass", "revise_before_final", "needs_human_review"}:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_draft_plan_review_invalid_verdict",
+                    "draft_plan_review.structural_verdict must be pass, revise_before_final, or needs_human_review.",
+                )
+            )
+        structure_findings = review.get("structure_findings")
+        if not isinstance(structure_findings, list) or not structure_findings:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_draft_plan_review_missing_findings",
+                    "draft_plan_review.structure_findings must contain at least one finding.",
+                )
+            )
+        else:
+            for index, finding in enumerate(structure_findings):
+                if not isinstance(finding, dict):
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_draft_plan_review_invalid_finding",
+                            "Each draft_plan_review.structure_findings item must be an object.",
+                        )
+                    )
+                    continue
+                for key in ["finding_id", "severity", "target", "finding", "recommendation"]:
+                    value = finding.get(key)
+                    if not isinstance(value, str) or not value.strip():
+                        findings.append(
+                            CompilerFinding(
+                                "error",
+                                "director_draft_plan_review_finding_missing_field",
+                                f"draft_plan_review.structure_findings[{index}].{key} must be non-empty.",
+                            )
+                        )
+                if finding.get("severity") not in {"info", "warning", "error"}:
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_draft_plan_review_invalid_finding_severity",
+                            "draft_plan_review finding severity must be info, warning, or error.",
+                        )
+                    )
+                findings.extend(
+                    self._check_decision_basis(
+                        finding,
+                        f"draft_plan_review.structure_findings[{index}]",
+                    )
+                )
+        for key, code in [
+            ("missing_capabilities", "director_draft_plan_review_missing_capabilities"),
+            ("recommended_changes", "director_draft_plan_review_missing_recommended_changes"),
+            ("applied_changes", "director_draft_plan_review_missing_applied_changes"),
+        ]:
+            value = review.get(key)
+            if not isinstance(value, list) or not value:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        code,
+                        f"draft_plan_review.{key} must be a non-empty list.",
+                    )
+                )
+        rejected = review.get("rejected_changes")
+        if not isinstance(rejected, list):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_draft_plan_review_invalid_rejected_changes",
+                    "draft_plan_review.rejected_changes must be a list, even when empty.",
+                )
+            )
+        for change_key in ["recommended_changes", "applied_changes"]:
+            changes = review.get(change_key)
+            if not isinstance(changes, list):
+                continue
+            for index, change in enumerate(changes):
+                if not isinstance(change, dict):
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_draft_plan_review_invalid_change",
+                            f"draft_plan_review.{change_key}[{index}] must be an object.",
+                        )
+                    )
+                    continue
+                if not isinstance(change.get("change_id"), str) or not change.get("change_id", "").strip():
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_draft_plan_review_change_missing_id",
+                            f"draft_plan_review.{change_key}[{index}] must include change_id.",
+                        )
+                    )
+        summary = review.get("final_structure_summary")
+        if not isinstance(summary, str) or not summary.strip():
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_draft_plan_review_missing_summary",
+                    "draft_plan_review.final_structure_summary must explain why the final graph is sound.",
                 )
             )
         return findings

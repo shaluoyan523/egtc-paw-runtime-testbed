@@ -59,6 +59,7 @@ class WorkflowSkeleton:
     research_route_decisions: list[dict[str, Any]] = field(default_factory=list)
     per_stage_agent_allocation: list[dict[str, Any]] = field(default_factory=list)
     plan_derivation_trace: list[str] = field(default_factory=list)
+    draft_plan_review: dict[str, Any] = field(default_factory=dict)
     experience_pattern_ids: list[str] = field(default_factory=list)
     experience_rationale: list[str] = field(default_factory=list)
 
