@@ -54,6 +54,7 @@ Use this skill before emitting a workflow plan. The Director must first build pl
    - Verification and overlooker stages must be read-only unless the repo policy explicitly grounds writes.
    - Experience patterns may shape structure but must not request network, permissions, sandbox changes, secrets, or sensitive writes.
    - Model-backed agents should normally use `executor_kind=model_agent` with explicit `model_provider`, optional `model`, and bounded `model_config`. Use `codex_cli` only when the task explicitly requires Codex compatibility, and use `subprocess` only for deterministic local commands.
+   - When `available_tooling_profiles` are present, compare the relevant tools and MCP servers before assigning them to nodes. Attach only the tool/MCP descriptors needed by that node, include permission preconditions, and treat network dataset tools as planned-but-gated unless repo policy and overlooker permission review ground network access.
 
 ## Required Output Fields
 

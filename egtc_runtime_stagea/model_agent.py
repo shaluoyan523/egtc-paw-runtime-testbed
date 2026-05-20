@@ -24,6 +24,9 @@ class ModelAgentRequest:
     output_json: bool = False
     timeout_sec: int = 600
     config: dict[str, Any] = field(default_factory=dict)
+    tools: list[dict[str, Any]] = field(default_factory=list)
+    mcp_servers: list[dict[str, Any]] = field(default_factory=list)
+    tool_env: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,9 @@ class DeterministicModelAgentProvider:
                 "model": request.model or "deterministic",
                 "node_id": request.node_id,
                 "role": request.role,
+                "tooling_profile": config.get("tooling_profile"),
+                "tool_count": len(request.tools),
+                "mcp_server_count": len(request.mcp_servers),
             },
             {
                 "type": "model_agent_response",
@@ -87,6 +93,8 @@ class DeterministicModelAgentProvider:
                 "node_id": request.node_id,
                 "output_files": output_files,
                 "json_output": response_json is not None,
+                "tool_ids": _tool_ids(request.tools),
+                "mcp_server_ids": _mcp_server_ids(request.mcp_servers),
             },
         ]
         if bool(config.get("emit_test_event", True)):
@@ -129,6 +137,10 @@ class DeterministicModelAgentProvider:
                 "node_id": request.node_id,
                 "role": request.role,
                 "status": "ok",
+                "tooling_profile": request.config.get("tooling_profile"),
+                "tool_ids": _tool_ids(request.tools),
+                "mcp_server_ids": _mcp_server_ids(request.mcp_servers),
+                "tool_env": request.tool_env,
             }
         return None
 
@@ -389,6 +401,9 @@ class OpenAICompatibleChatProvider:
                     "model": model,
                     "node_id": request.node_id,
                     "role": request.role,
+                    "tooling_profile": config.get("tooling_profile"),
+                    "tool_count": len(request.tools),
+                    "mcp_server_count": len(request.mcp_servers),
                 },
                 {
                     "type": "model_agent_response",
@@ -397,6 +412,8 @@ class OpenAICompatibleChatProvider:
                     "node_id": request.node_id,
                     "output_files": output_files,
                     "json_output": parsed is not None,
+                    "tool_ids": _tool_ids(request.tools),
+                    "mcp_server_ids": _mcp_server_ids(request.mcp_servers),
                 },
             ]
         )
@@ -540,3 +557,19 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _tool_ids(tools: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(tool.get("tool_id"))
+        for tool in tools
+        if isinstance(tool, dict) and tool.get("tool_id")
+    ]
+
+
+def _mcp_server_ids(mcp_servers: list[dict[str, Any]]) -> list[str]:
+    return [
+        str(server.get("server_id"))
+        for server in mcp_servers
+        if isinstance(server, dict) and server.get("server_id")
+    ]

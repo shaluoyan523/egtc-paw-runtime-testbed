@@ -5,6 +5,7 @@ from typing import Any
 from .experience import ExperienceMatch
 from .models import to_plain_dict
 from .phaseb_models import RepoPolicy
+from .tool_registry import merge_model_config_tooling
 
 
 def build_deterministic_model_director_output(
@@ -646,10 +647,12 @@ def _instantiation(
         "prompt": prompt,
         "model_provider": model_provider,
         "model": model,
-        "model_config": {
-            "output_file": f"{node_id}_model_output.json",
-            "output_json": True,
-        },
+        "model_config": merge_model_config_tooling(
+            {
+                "output_file": f"{node_id}_model_output.json",
+                "output_json": True,
+            }
+        ),
         "required_evidence": ["diff", "test", "log", "sandbox_events", "resource_report"],
         "acceptance_criteria": [
             "Worker may only submit results.",
