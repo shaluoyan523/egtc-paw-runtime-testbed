@@ -1,9 +1,9 @@
 {
   "catalog_schema": "egtc.experience.catalog.v1",
-  "pattern_count": 22,
+  "pattern_count": 24,
   "pattern_type_counts": {
     "agent_generation": 2,
-    "aggregation": 1,
+    "aggregation": 2,
     "dynamic_topology": 1,
     "failure_policy": 2,
     "governance": 3,
@@ -11,7 +11,7 @@
     "memory_planning": 2,
     "review_loop": 2,
     "routing": 3,
-    "scaling_policy": 1,
+    "scaling_policy": 2,
     "security_policy": 1,
     "tool_planning": 1,
     "topology": 2
@@ -30,6 +30,25 @@
         "proposer",
         "synthesis",
         "moa"
+      ]
+    },
+    {
+      "confidence_score": 8.0,
+      "description": "Use OpenDeepThink-style population evolution: sample a population of candidate solutions, compare candidates pairwise, aggregate noisy preferences with Bradley-Terry ranking, preserve elites, discard the bottom quartile, mutate the top three quarters with negative pairwise feedback, and finish with a denser BT selection round.",
+      "evidence_level": "direct",
+      "path": "patterns/seed-aggregation-opendeepthink-population-bt-evolution.json",
+      "pattern_id": "seed-aggregation-opendeepthink-population-bt-evolution",
+      "pattern_type": "aggregation",
+      "tags": [
+        "opendeepthink",
+        "bradley-terry",
+        "bt",
+        "population",
+        "evolution",
+        "pairwise",
+        "mutation",
+        "aggregation",
+        "test-time-scaling"
       ]
     },
     {
@@ -266,6 +285,24 @@
         "hierarchy",
         "large-team",
         "director"
+      ]
+    },
+    {
+      "confidence_score": 7.5,
+      "description": "Scale a multi-agent workflow through a learned curriculum rather than a dedicated hard-coded algorithm: start with a small candidate pool, measure candidate quality and selection uncertainty, then expand population size, comparison density, mutation depth, verifier strength, or expert routing only when observations justify the extra budget.",
+      "evidence_level": "direct",
+      "path": "patterns/seed-scaling-adaptive-population-curriculum.json",
+      "pattern_id": "seed-scaling-adaptive-population-curriculum",
+      "pattern_type": "scaling_policy",
+      "tags": [
+        "adaptive-scaling",
+        "curriculum",
+        "population",
+        "bt",
+        "mutation",
+        "director",
+        "experience-learning",
+        "test-time-scaling"
       ]
     },
     {

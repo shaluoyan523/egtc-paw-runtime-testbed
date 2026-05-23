@@ -35,6 +35,7 @@ from .models import (
     WorkerResult,
     to_plain_dict,
 )
+from .phaseb_models import WorkflowBlueprint
 from .overlooker import CodexOverlooker, ModelOverlooker
 from .validators import DeterministicValidator
 from .workspace_diff import diff_snapshots, snapshot_workspace
@@ -65,6 +66,41 @@ class GraphRunSpec:
     phase: str = "D"
     second_overlooker_mode: str = "deterministic"
     integration_overlooker_mode: str = "deterministic"
+    scaling_policy: dict[str, Any] = field(default_factory=dict)
+
+
+def graph_spec_from_blueprint(
+    blueprint: WorkflowBlueprint,
+    *,
+    max_parallelism: int = 2,
+    max_attempts: int = 1,
+    retry_budget: int = 0,
+    max_same_failure_retries: int = 2,
+    overlooker_mode: str = "deterministic",
+    director_mode: str | None = None,
+    replan_budget: int = 0,
+    phase: str = "F",
+    second_overlooker_mode: str = "deterministic",
+    integration_overlooker_mode: str = "deterministic",
+) -> GraphRunSpec:
+    """Create a runtime graph spec without losing Director planning metadata."""
+
+    return GraphRunSpec(
+        graph_id=blueprint.blueprint_id,
+        nodes=[inst.node for inst in blueprint.node_instantiations],
+        edges=list(blueprint.workflow_skeleton.edges),
+        max_parallelism=max_parallelism,
+        max_attempts=max_attempts,
+        retry_budget=retry_budget,
+        max_same_failure_retries=max_same_failure_retries,
+        overlooker_mode=overlooker_mode,
+        director_mode=director_mode or blueprint.director_mode,
+        replan_budget=replan_budget,
+        phase=phase,
+        second_overlooker_mode=second_overlooker_mode,
+        integration_overlooker_mode=integration_overlooker_mode,
+        scaling_policy=dict(blueprint.workflow_skeleton.scaling_policy),
+    )
 
 
 @dataclass
@@ -1694,6 +1730,22 @@ Rules:
                 if status == "accepted" and (replan_count or retry_events)
                 else ("promote" if status == "accepted" else "demote")
             ),
+            scaling_observations=self._scaling_observations(
+                spec,
+                records,
+                status,
+                replan_count,
+                len(retry_events),
+            ),
+            reflection_attribution=self._reflection_attribution(
+                spec,
+                records,
+                status,
+                replan_count,
+                len(retry_events),
+                dynamic_events,
+                integration_result or {},
+            ),
             evidence_refs=evidence_refs,
         )
         self.experience_library.record_workflow_observation(observation)
@@ -1707,6 +1759,190 @@ Rules:
         }
         self._record(run_id, spec.graph_id, "WorkflowExperienceObservationRecorded", event)
         return event
+
+    def _scaling_observations(
+        self,
+        spec: GraphRunSpec,
+        records: dict[str, GraphNodeRecord],
+        status: str,
+        replan_count: int,
+        retry_count: int,
+    ) -> dict[str, Any]:
+        pattern_ids: set[str] = set()
+        for node in spec.nodes:
+            pattern_ids.update(node.experience_pattern_ids)
+        for record in records.values():
+            pattern_ids.update(record.experience_pattern_ids)
+
+        scaling_enabled = (
+            bool(spec.scaling_policy)
+            or "seed-scaling-adaptive-population-curriculum" in pattern_ids
+        )
+        if not scaling_enabled:
+            return {}
+
+        node_count = len(spec.nodes)
+        accepted_count = sum(
+            1 for record in records.values() if record.status == "NODE_ACCEPTED"
+        )
+        rejected_count = sum(
+            1 for record in records.values() if record.status == "NODE_REJECTED"
+        )
+        branch_candidate_count = sum(
+            1 for record in records.values() if record.branch_candidate_ref
+        )
+        validator_pass_rate = accepted_count / node_count if node_count else 0.0
+        current_level = self._infer_scale_level(spec, node_count)
+        ranking_entropy = (
+            spec.scaling_policy.get("ranking_entropy")
+            if isinstance(spec.scaling_policy, dict)
+            else None
+        )
+        if ranking_entropy is None and node_count:
+            unresolved = node_count - accepted_count - rejected_count
+            ranking_entropy = round((rejected_count + unresolved) / node_count, 4)
+
+        next_hint = "hold"
+        trigger_reasons: list[str] = []
+        if status == "accepted" and retry_count == 0 and replan_count == 0:
+            next_hint = "promote_current_scale_level"
+            trigger_reasons.append("accepted_without_dynamic_correction")
+        elif accepted_count > 0 and (rejected_count or retry_count or replan_count):
+            next_hint = "scale_up_mutation_or_comparison_density"
+            trigger_reasons.append("partial_competence_detected")
+        elif accepted_count == 0 and rejected_count == node_count and node_count > 0:
+            next_hint = "route_to_research_or_specialist_before_more_population"
+            trigger_reasons.append("no_candidate_near_correct")
+        elif retry_count or replan_count:
+            next_hint = "revise_scaling_policy"
+            trigger_reasons.append("dynamic_correction_required")
+
+        if branch_candidate_count:
+            trigger_reasons.append("branch_candidates_created")
+        if spec.scaling_policy.get("requested_scale_level") is not None:
+            trigger_reasons.append("director_declared_requested_scale_level")
+
+        return {
+            "policy_id": spec.scaling_policy.get(
+                "policy_id",
+                "seed-scaling-adaptive-population-curriculum",
+            ),
+            "current_scale_level": current_level,
+            "requested_scale_level": spec.scaling_policy.get("requested_scale_level"),
+            "planned_agent_count": node_count,
+            "candidate_count": spec.scaling_policy.get("candidate_count", node_count),
+            "comparison_count": spec.scaling_policy.get("comparison_count", 0),
+            "mutation_rounds": spec.scaling_policy.get("mutation_rounds", 0),
+            "ranking_entropy": ranking_entropy,
+            "validator_pass_rate": round(validator_pass_rate, 4),
+            "accepted_node_count": accepted_count,
+            "rejected_node_count": rejected_count,
+            "retry_count": retry_count,
+            "replan_count": replan_count,
+            "branch_candidate_count": branch_candidate_count,
+            "next_scaling_hint": next_hint,
+            "trigger_reasons": trigger_reasons or ["no_scaling_change_signal"],
+        }
+
+    def _reflection_attribution(
+        self,
+        spec: GraphRunSpec,
+        records: dict[str, GraphNodeRecord],
+        status: str,
+        replan_count: int,
+        retry_count: int,
+        dynamic_events: list[dict[str, Any]],
+        integration_summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        categories: list[str] = []
+        signals: list[str] = []
+
+        denied_or_blocked = [
+            record
+            for record in records.values()
+            if record.status in {"NODE_BLOCKED", "NODE_ABORTED"}
+            or record.failure_code in {"permission_denied", "network_not_grounded"}
+        ]
+        rejected = [
+            record for record in records.values() if record.status == "NODE_REJECTED"
+        ]
+        verifier_findings = [
+            record
+            for record in records.values()
+            if record.overlooker_verdict == "fail"
+            or record.overlooker_recommended_action in {"retry", "request_director_replan"}
+        ]
+
+        if denied_or_blocked:
+            categories.append("permission")
+            signals.append("node blocked or aborted by permission/runtime guard")
+        if replan_count:
+            categories.append("workflow")
+            signals.append("dynamic graph replan was required")
+        if retry_count:
+            categories.append("assignment")
+            signals.append("retry path was needed for at least one node")
+        if verifier_findings:
+            categories.append("verification")
+            signals.append("Overlooker or verifier rejected evidence")
+        if integration_summary.get("conflict_count") or integration_summary.get("conflicts"):
+            categories.append("assignment")
+            signals.append("branch integration reported conflicts")
+        if spec.scaling_policy:
+            scaling_hint = spec.scaling_policy.get("next_scaling_hint")
+            requested_level = spec.scaling_policy.get("requested_scale_level")
+            if requested_level is not None or scaling_hint:
+                categories.append("scaling")
+                signals.append("Director declared scaling policy observations")
+        if status != "accepted" and not categories:
+            categories.append("task_profile")
+            signals.append("failure had no grounded permission, verifier, retry, or replan signal")
+        if status == "accepted" and not categories:
+            categories.append("none")
+            signals.append("workflow accepted without correction signal")
+
+        unique_categories = []
+        for category in categories:
+            if category not in unique_categories:
+                unique_categories.append(category)
+
+        primary = unique_categories[0] if unique_categories else "none"
+        recommended_learning = {
+            "permission": "learn a narrower permission intent or add an explicit permission review gate",
+            "workflow": "revise workflow structure and record the successful replan path",
+            "assignment": "revise ownership, handoff, or failure takeover policy",
+            "verification": "revise verifier evidence contract or Overlooker acceptance criteria",
+            "scaling": "adjust scale level using observed candidate and validator signals",
+            "task_profile": "improve pre-run task profiling and failure-mode prediction",
+            "none": "promote the current planning pattern without structural revision",
+        }.get(primary, "review attribution before updating experience patterns")
+
+        return {
+            "primary_category": primary,
+            "categories": unique_categories,
+            "signals": signals or ["no attribution signal"],
+            "recommended_learning": recommended_learning,
+            "dataset_quality_note": (
+                "mark ambiguous_task when verifier evidence indicates objective ambiguity"
+            ),
+            "cost_acceptability": (
+                "acceptable" if status == "accepted" and not retry_count and not replan_count else "review"
+            ),
+        }
+
+    def _infer_scale_level(self, spec: GraphRunSpec, node_count: int) -> int:
+        explicit = spec.scaling_policy.get("current_scale_level")
+        if isinstance(explicit, int):
+            return explicit
+        if node_count <= 1:
+            return 0
+        if node_count <= 3:
+            return 1
+        if node_count <= 8:
+            return 2
+        if spec.scaling_policy.get("mutation_rounds") or spec.scaling_policy.get("evolution_loop"):
+            return 3
+        return 4
 
     def _workflow_experience_outcome(
         self,
@@ -2530,6 +2766,7 @@ Rules:
             "phase": spec.phase,
             "second_overlooker_mode": spec.second_overlooker_mode,
             "integration_overlooker_mode": spec.integration_overlooker_mode,
+            "scaling_policy": spec.scaling_policy,
         }
 
     def _spec_from_checkpoint(self, checkpoint: dict[str, Any]) -> GraphRunSpec:
@@ -2548,6 +2785,11 @@ Rules:
             phase=str(raw.get("phase", "D")),
             second_overlooker_mode=str(raw.get("second_overlooker_mode", "deterministic")),
             integration_overlooker_mode=str(raw.get("integration_overlooker_mode", "deterministic")),
+            scaling_policy=(
+                raw.get("scaling_policy")
+                if isinstance(raw.get("scaling_policy"), dict)
+                else {}
+            ),
         )
 
     def _node_from_plain(self, raw: dict[str, Any]) -> NodeCapsule:

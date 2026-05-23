@@ -188,6 +188,14 @@ Model-agent units can also receive a SWE dataset tooling profile through `swe_da
 
 `transport="runtime_builtin"` tools are now executable through the EGTC runtime MCP shim. Model agents can return JSON `tool_calls`, and the runtime dispatches them to filesystem/git/python/dataset adapters, writes `tool_audit.jsonl` and `tool_evidence.json`, and collects those files as evidence artifacts. Network dataset tools remain blocked under `network:none` and produce `permission_review_required=true`; external stdio/http MCP transports still need host integration.
 
+Run the Phase I Director profiling demo:
+
+```bash
+python3 examples/phase_i_director_profile_assignment_permission_demo.py
+```
+
+Phase I promotes planning details that were previously implicit into first-class compiler-checked structures: `task_profile`, `work_assignment_plan`, `permission_plan`, and `workflow_skeleton.execution_estimate`. The demo checks BrowseComp-style retrieval, Finance-Agent calculation, SWE code repair, Terminal-Bench execution, PlanCraft state transitions, and OpenDeepThink-style contest reasoning, then compiles a model Director plan using the new fields.
+
 For proxy environments, install the ModelScope extra so SOCKS support is present:
 
 ```bash
@@ -251,6 +259,7 @@ Phase G adds:
 - JSONL-backed workflow observation persistence under the same `ExperienceLibrary`.
 - Automatic workflow update proposals after non-paused graph runs.
 - Learning from dynamic workflow updates, including Director GraphPatch application, retry scheduling, Overlooker fork selection, Phase E branch candidates, and final integration gates.
+- `reflection_attribution` in workflow observations, separating failures in task profiling, workflow structure, assignment, permissions, tooling, verification, scaling, cost, and dataset quality before proposing experience-library updates.
 
 Phase H adds:
 
@@ -261,6 +270,14 @@ Phase H adds:
 - `DirectorAgentV1.plan_with_model_director` for non-Codex Director sessions.
 - `ModelOverlooker` and model-agent paths for fork advisor, Director GraphPatch, and Phase E integration review.
 - Runtime summaries expose `workflow_learning` with the recorded observation and proposed experience updates.
+
+Phase I adds:
+
+- Detailed `TaskDiagnosis.task_profile` and top-level `WorkflowBlueprint.task_profile`.
+- `WorkflowBlueprint.work_assignment_plan` with per-agent input/output schema, ownership, parallel-safety rationale, failure takeover, agent type, and capability needs.
+- `WorkflowBlueprint.permission_plan` with per-node permission intents, minimal boundaries, `secret_access=false`, and denial fallbacks.
+- `WorkflowSkeleton.execution_estimate` with estimated agents, tokens, wall time, success probability, budget gate, stop condition, escalation condition, and cheaper alternative.
+- Compiler checks that Director outputs cannot skip those structures.
 
 Deferred beyond Phase G:
 

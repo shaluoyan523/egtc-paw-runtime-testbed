@@ -27,6 +27,7 @@ class TaskDiagnosis:
     repo_touchpoints: list[str]
     requires_code_change: bool
     requires_tests: bool
+    task_profile: dict[str, Any] = field(default_factory=dict)
     unknowns: list[str] = field(default_factory=list)
     experience_matches: list[dict[str, Any]] = field(default_factory=list)
 
@@ -53,6 +54,7 @@ class WorkflowSkeleton:
     agent_allocation: dict[str, Any] = field(default_factory=dict)
     alternative_skeletons: list[dict[str, Any]] = field(default_factory=list)
     scaling_policy: dict[str, Any] = field(default_factory=dict)
+    execution_estimate: dict[str, Any] = field(default_factory=dict)
     deliberation_trace: list[str] = field(default_factory=list)
     linear_requirement_flow: list[dict[str, Any]] = field(default_factory=list)
     stage_structure_decisions: list[dict[str, Any]] = field(default_factory=list)
@@ -101,6 +103,9 @@ class WorkflowBlueprint:
     repo_policy: RepoPolicy
     workflow_skeleton: WorkflowSkeleton
     node_instantiations: list[NodeInstantiation]
+    task_profile: dict[str, Any] = field(default_factory=dict)
+    work_assignment_plan: list[dict[str, Any]] = field(default_factory=list)
+    permission_plan: list[dict[str, Any]] = field(default_factory=list)
     experience_pattern_ids: list[str] = field(default_factory=list)
     director_mode: str = "deterministic"
     director_session_id: str | None = None

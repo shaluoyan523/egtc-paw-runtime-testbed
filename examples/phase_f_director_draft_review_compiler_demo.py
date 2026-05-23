@@ -35,6 +35,31 @@ def basis(basis_id: str, target: str) -> dict[str, object]:
     }
 
 
+TASK_PROFILE = {
+    "primary_task_family": "code_repair",
+    "task_families": ["code_repair"],
+    "verification_methods": ["unit_tests", "patch_review"],
+    "knowledge_sources": ["prompt", "repo", "tool_execution"],
+    "predicted_failure_modes": ["ambiguity", "missing_dependency", "patch_risk"],
+    "risk_level": "medium",
+    "estimated_difficulty": "medium",
+    "estimated_budget": {
+        "estimated_agents": 1,
+        "estimated_tokens": 4000,
+        "estimated_wall_time_sec": 180,
+        "worth_multi_candidate": False,
+    },
+    "budget_gate": {
+        "max_agents_before_replan": 1,
+        "max_tokens_before_replan": 8000,
+        "max_wall_time_sec_before_replan": 360,
+    },
+    "stop_condition": "Stop when compiler-level verification passes.",
+    "escalation_condition": "Escalate when the compiler reports missing planning fields.",
+    "cheaper_alternative": "A single verifier is enough for this schema-only compiler demo.",
+}
+
+
 def main() -> int:
     repo_policy = RepoPolicy(
         repo_root=str(ROOT),
@@ -81,6 +106,7 @@ def main() -> int:
             repo_touchpoints=["."],
             requires_code_change=True,
             requires_tests=True,
+            task_profile=TASK_PROFILE,
         ),
         repo_policy=repo_policy,
         workflow_skeleton=WorkflowSkeleton(
@@ -96,10 +122,44 @@ def main() -> int:
                 {"name": "large", "estimated_agents": 3, "selected": False, "rejection_reason": "Unneeded for compiler demo."},
             ],
             scaling_policy={
+                "policy_id": "seed-scaling-adaptive-population-curriculum",
+                "current_scale_level": 0,
+                "requested_scale_level": 0,
+                "scale_level_name": "single_candidate_baseline",
                 "scale_triggers": ["multiple independent write surfaces"],
+                "scale_down_triggers": ["verification shows no implementation work is present"],
                 "max_planned_agents_for_current_task": 1,
                 "expansion_strategy": ["add explorer and implementer stages"],
                 "requires_replan_when": ["verification finds missing implementation evidence"],
+                "observations_to_record": [
+                    "candidate_count",
+                    "comparison_count",
+                    "validator_pass_rate",
+                    "retry_count",
+                    "replan_count",
+                    "next_scaling_hint",
+                ],
+                "budget_gate": {
+                    "max_candidate_count": 1,
+                    "max_comparison_count": 0,
+                    "max_mutation_rounds": 0,
+                    "max_planned_agents": 1,
+                },
+                "decision_basis": basis("basis-scaling-policy", "workflow_skeleton.scaling_policy"),
+            },
+            execution_estimate={
+                "estimated_agents": 1,
+                "estimated_tokens": 4000,
+                "estimated_wall_time_sec": 180,
+                "expected_success_probability": 0.9,
+                "budget_gate": {
+                    "max_agents_before_replan": 1,
+                    "max_tokens_before_replan": 8000,
+                    "max_wall_time_sec_before_replan": 360,
+                },
+                "stop_condition": "Stop when compiler-level verification passes.",
+                "escalation_condition": "Escalate when planning schema checks fail.",
+                "cheaper_alternative": "No cheaper path than one read-only verifier for this demo.",
             },
             deliberation_trace=[
                 "Compared small, selected, and larger-scalable structures.",
@@ -211,6 +271,42 @@ def main() -> int:
             },
             experience_rationale=["No experience pattern is required for this compiler demo.", "The self-review schema is local."],
         ),
+        task_profile=TASK_PROFILE,
+        work_assignment_plan=[
+            {
+                "node_id": "verify",
+                "role": "verifier",
+                "stage_id": "stage-1",
+                "agent_type": "verification",
+                "input_schema": {
+                    "required": ["objective", "workflow_skeleton", "node_instantiations"],
+                    "upstream_nodes": [],
+                },
+                "output_schema": {"required": ["test_report"]},
+                "ownership_boundary": "Read-only compiler schema verification.",
+                "parallel_safe": False,
+                "parallel_safety_reason": "Single terminal verifier; no parallel peer exists.",
+                "failure_takeover": "Overlooker or compiler rejects the plan and asks Director to replan.",
+                "selection_basis": "Verifier selected to test draft_plan_review and schema completeness.",
+                "capability_needs": ["repo_read"],
+            }
+        ],
+        permission_plan=[
+            {
+                "node_id": "phasef-verify",
+                "skeleton_node_id": "verify",
+                "permission_intents": ["read_repo"],
+                "minimum_boundary": {
+                    "read_paths": ["."],
+                    "write_paths": [],
+                    "allowed_commands": [],
+                    "network": "none",
+                    "secret_access": False,
+                },
+                "why_needed": "Read-only schema verification needs local planning artifacts only.",
+                "fallback_if_denied": "Fail compiler validation and request Director replan.",
+            }
+        ],
         node_instantiations=[
             NodeInstantiation(
                 node=node,
@@ -248,10 +344,14 @@ def main() -> int:
             "schema_sha256": "demo-schema-sha",
             "loaded": True,
             "applied_required_fields": [
+                "task_profile",
+                "work_assignment_plan",
+                "permission_plan",
                 "linear_requirement_flow",
                 "stage_structure_decisions",
                 "research_route_decisions",
                 "per_stage_agent_allocation",
+                "scaling_policy",
                 "plan_derivation_trace",
                 "node_selection_principles",
                 "instantiation_principles",
