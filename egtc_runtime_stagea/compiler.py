@@ -114,6 +114,7 @@ class WorkflowCompiler:
             findings.extend(self._check_task_profile(blueprint))
             findings.extend(self._check_work_assignment_plan(blueprint))
             findings.extend(self._check_permission_plan(blueprint))
+            findings.extend(self._check_task_family_alignment(blueprint))
 
         accepted = not any(finding.severity == "error" for finding in findings)
         return CompiledWorkflow(
@@ -561,6 +562,158 @@ class WorkflowCompiler:
                         "error",
                         "director_task_profile_missing_multi_candidate_judgment",
                         "task_profile.estimated_budget.worth_multi_candidate must say whether multi-candidate work is worth it.",
+                    )
+                )
+        return findings
+
+    def _check_task_family_alignment(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
+        profile = blueprint.task_profile or blueprint.task_diagnosis.task_profile
+        if not isinstance(profile, dict):
+            return []
+        family = str(profile.get("primary_task_family") or "")
+        if not family:
+            return []
+
+        skeleton_node_ids = {
+            node.node_id.lower()
+            for node in blueprint.workflow_skeleton.nodes
+        }
+        skeleton_roles = {
+            node.role.lower()
+            for node in blueprint.workflow_skeleton.nodes
+        }
+        skeleton_phases = {
+            node.phase.lower()
+            for node in blueprint.workflow_skeleton.nodes
+        }
+        permission_intents = {
+            str(intent)
+            for item in blueprint.permission_plan
+            if isinstance(item, dict)
+            for intent in item.get("permission_intents", [])
+        }
+
+        findings: list[CompilerFinding] = []
+        if family in {
+            "retrieval",
+            "finance_calculation",
+            "planning_state_transition",
+            "terminal_execution",
+            "contest_reasoning",
+            "analysis",
+        }:
+            patch_like = {
+                node_id
+                for node_id in skeleton_node_ids
+                if node_id in {"implement", "explore-tests", "explore-context"}
+            }
+            if patch_like:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_family_uses_code_repair_template",
+                        (
+                            f"task_profile.primary_task_family={family} must not use the "
+                            f"code-repair fallback nodes: {sorted(patch_like)}."
+                        ),
+                    )
+                )
+            if "write_patch" in permission_intents:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_family_unexpected_write_patch",
+                        f"task_profile.primary_task_family={family} must not request write_patch by default.",
+                    )
+                )
+
+        required_signals = {
+            "retrieval": [
+                {"node_ids": {"research-sources", "source-verify"}},
+                {"roles": {"researcher", "verifier"}},
+                {"intents": {"dataset_read"}},
+            ],
+            "finance_calculation": [
+                {"node_ids": {"calculate-answer", "formula-verify"}},
+                {"roles": {"calculator", "verifier"}},
+                {"intents": {"finance_calculator"}},
+            ],
+            "planning_state_transition": [
+                {"node_ids": {"ambiguity-check", "transition-verify"}},
+                {"roles": {"ambiguity_detector", "planner", "verifier"}},
+            ],
+            "terminal_execution": [
+                {"node_ids": {"plan-terminal-actions", "execute-checkpoint", "verify-checkpoint"}},
+                {"roles": {"tool_planner", "executor", "verifier"}},
+                {"intents": {"run_shell", "container_exec"}},
+            ],
+            "contest_reasoning": [
+                {"node_ids": {"candidate-generate", "candidate-judge", "final-verify"}},
+                {"roles": {"proposer", "judge", "verifier"}},
+            ],
+            "analysis": [
+                {"node_ids": {"analyze-task", "verify-answer-plan"}},
+            ],
+            "code_repair": [
+                {"node_ids": {"implement", "verify"}},
+                {"intents": {"write_patch"}},
+            ],
+        }
+        for index, signal in enumerate(required_signals.get(family, [])):
+            required_nodes = signal.get("node_ids")
+            if required_nodes and not required_nodes.issubset(skeleton_node_ids):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_family_missing_nodes",
+                        (
+                            f"task_profile.primary_task_family={family} is missing required "
+                            f"node ids: {sorted(required_nodes - skeleton_node_ids)}."
+                        ),
+                    )
+                )
+            required_roles = signal.get("roles")
+            if required_roles and not required_roles.issubset(skeleton_roles):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_family_missing_roles",
+                        (
+                            f"task_profile.primary_task_family={family} is missing required "
+                            f"roles: {sorted(required_roles - skeleton_roles)}."
+                        ),
+                    )
+                )
+            required_phases = signal.get("phases")
+            if required_phases and not required_phases.issubset(skeleton_phases):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_family_missing_phases",
+                        (
+                            f"task_profile.primary_task_family={family} is missing required "
+                            f"phases: {sorted(required_phases - skeleton_phases)}."
+                        ),
+                    )
+                )
+            required_intents = signal.get("intents")
+            if required_intents and not required_intents.issubset(permission_intents):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_family_missing_permission_intents",
+                        (
+                            f"task_profile.primary_task_family={family} is missing required "
+                            f"permission intents: {sorted(required_intents - permission_intents)}."
+                        ),
+                    )
+                )
+            if not signal:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_family_invalid_alignment_signal",
+                        f"Internal compiler alignment rule {index} for {family} is empty.",
                     )
                 )
         return findings
