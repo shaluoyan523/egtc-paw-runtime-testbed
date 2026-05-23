@@ -36,27 +36,27 @@ def basis(basis_id: str, target: str) -> dict[str, object]:
 
 
 TASK_PROFILE = {
-    "primary_task_family": "code_repair",
-    "task_families": ["code_repair"],
-    "verification_methods": ["unit_tests", "patch_review"],
-    "knowledge_sources": ["prompt", "repo", "tool_execution"],
-    "predicted_failure_modes": ["ambiguity", "missing_dependency", "patch_risk"],
+    "primary_task_family": "analysis",
+    "task_families": ["analysis"],
+    "verification_methods": ["human_judgment"],
+    "knowledge_sources": ["prompt", "repo"],
+    "predicted_failure_modes": ["ambiguity", "schema_mismatch"],
     "risk_level": "medium",
     "estimated_difficulty": "medium",
     "estimated_budget": {
-        "estimated_agents": 1,
+        "estimated_agents": 2,
         "estimated_tokens": 4000,
         "estimated_wall_time_sec": 180,
         "worth_multi_candidate": False,
     },
     "budget_gate": {
-        "max_agents_before_replan": 1,
+        "max_agents_before_replan": 2,
         "max_tokens_before_replan": 8000,
         "max_wall_time_sec_before_replan": 360,
     },
     "stop_condition": "Stop when compiler-level verification passes.",
     "escalation_condition": "Escalate when the compiler reports missing planning fields.",
-    "cheaper_alternative": "A single verifier is enough for this schema-only compiler demo.",
+    "cheaper_alternative": "A single analyst is enough only when no independent review gate is required.",
 }
 
 
@@ -70,7 +70,7 @@ def main() -> int:
         sensitive_paths=[".git", ".env"],
     )
     skeleton_node = WorkflowSkeletonNode(
-        node_id="verify",
+        node_id="verify-answer-plan",
         phase="verification",
         role="verifier",
         goal="Verify the Director-selected plan with read-only evidence.",
@@ -82,11 +82,21 @@ def main() -> int:
             "dependency_principle": "No predecessor is needed in this single-node compiler demo.",
             "parallelism_principle": "This is a serial terminal gate in the minimal graph.",
             "evidence_principle": "test_report is sufficient for compiler-level verification.",
-            "decision_basis": basis("basis-node-verify", "workflow_skeleton.nodes[verify]"),
+            "decision_basis": basis("basis-node-verify", "workflow_skeleton.nodes[verify-answer-plan]"),
         },
     )
+    analyze_node = NodeCapsule(
+        node_id="phasef-analyze-task",
+        phase="analysis",
+        goal="Analyze the Director-selected plan shape before verification.",
+        command=[],
+        acceptance_criteria=["Overlooker acceptance must cite evidence_ref."],
+        executor_kind="codex_cli",
+        required_evidence=["log", "sandbox_events", "resource_report"],
+        prompt="Analyze the plan shape with read-only evidence.",
+    )
     node = NodeCapsule(
-        node_id="phasef-verify",
+        node_id="phasef-verify-answer-plan",
         phase="verification",
         goal=skeleton_node.goal,
         command=[],
@@ -111,14 +121,32 @@ def main() -> int:
         repo_policy=repo_policy,
         workflow_skeleton=WorkflowSkeleton(
             skeleton_id="skeleton-draft-review-positive",
-            topology="review_gate",
-            nodes=[skeleton_node],
-            edges=[],
+            topology="prompt_analysis_then_consistency_verify",
+            nodes=[
+                WorkflowSkeletonNode(
+                    node_id="analyze-task",
+                    phase="analysis",
+                    role="analyst",
+                    goal="Analyze the Director-selected plan shape before verification.",
+                    expected_outputs=["answer_plan"],
+                    node_selection_principles={
+                        "stage_id": "stage-1",
+                        "selected_for": ["The analysis task family requires an explicit analysis node."],
+                        "role_principle": "Analyst is selected to produce the prompt-local plan artifact.",
+                        "dependency_principle": "No predecessor is needed for prompt-local analysis.",
+                        "parallelism_principle": "This is serial because verification consumes the answer plan.",
+                        "evidence_principle": "answer_plan is sufficient for downstream verification.",
+                        "decision_basis": basis("basis-node-analyze", "workflow_skeleton.nodes[analyze-task]"),
+                    },
+                ),
+                skeleton_node,
+            ],
+            edges=[("analyze-task", "verify-answer-plan")],
             rationale="Positive compiler demo for Director draft plan self-review.",
-            agent_allocation={"total_agents": 1, "roles": {"verifier": 1}},
+            agent_allocation={"total_agents": 2, "roles": {"analyst": 1, "verifier": 1}},
             alternative_skeletons=[
                 {"name": "small", "estimated_agents": 1, "selected": False, "rejection_reason": "Insufficient review trace."},
-                {"name": "selected", "estimated_agents": 1, "selected": True, "rejection_reason": ""},
+                {"name": "selected", "estimated_agents": 2, "selected": True, "rejection_reason": ""},
                 {"name": "large", "estimated_agents": 3, "selected": False, "rejection_reason": "Unneeded for compiler demo."},
             ],
             scaling_policy={
@@ -128,8 +156,8 @@ def main() -> int:
                 "scale_level_name": "single_candidate_baseline",
                 "scale_triggers": ["multiple independent write surfaces"],
                 "scale_down_triggers": ["verification shows no implementation work is present"],
-                "max_planned_agents_for_current_task": 1,
-                "expansion_strategy": ["add explorer and implementer stages"],
+                "max_planned_agents_for_current_task": 2,
+                "expansion_strategy": ["add specialist analysis or verification nodes if schema ambiguity expands"],
                 "requires_replan_when": ["verification finds missing implementation evidence"],
                 "observations_to_record": [
                     "candidate_count",
@@ -143,17 +171,17 @@ def main() -> int:
                     "max_candidate_count": 1,
                     "max_comparison_count": 0,
                     "max_mutation_rounds": 0,
-                    "max_planned_agents": 1,
+                    "max_planned_agents": 2,
                 },
                 "decision_basis": basis("basis-scaling-policy", "workflow_skeleton.scaling_policy"),
             },
             execution_estimate={
-                "estimated_agents": 1,
+                "estimated_agents": 2,
                 "estimated_tokens": 4000,
                 "estimated_wall_time_sec": 180,
                 "expected_success_probability": 0.9,
                 "budget_gate": {
-                    "max_agents_before_replan": 1,
+                    "max_agents_before_replan": 2,
                     "max_tokens_before_replan": 8000,
                     "max_wall_time_sec_before_replan": 360,
                 },
@@ -169,10 +197,10 @@ def main() -> int:
                 {
                     "stage_id": "stage-1",
                     "order": 1,
-                    "name": "Verify structure",
-                    "purpose": "Ensure the Director output has a review gate.",
+                    "name": "Analyze and verify structure",
+                    "purpose": "Ensure the Director output has analysis and review gates.",
                     "inputs": ["objective"],
-                    "outputs": ["test_report"],
+                    "outputs": ["answer_plan", "test_report"],
                     "risk_level": "medium",
                     "acceptance_evidence": ["test_report"],
                     "decision_basis": basis("basis-stage-1", "linear_requirement_flow[stage-1]"),
@@ -182,10 +210,10 @@ def main() -> int:
                 {
                     "stage_id": "stage-1",
                     "candidate_structures": [
-                        {"structure": "review_gate", "fit": "high", "reason": "The demo validates review structure."}
+                        {"structure": "analysis_then_review_gate", "fit": "high", "reason": "The demo validates analysis structure."}
                     ],
-                    "selected_structure": "review_gate",
-                    "selection_reason": "A review gate directly tests the self-review requirement.",
+                    "selected_structure": "single_agent",
+                    "selection_reason": "A prompt-local analysis node produces the artifact that the verifier checks.",
                     "anti_signals": ["Task requires implementation edits."],
                     "decision_basis": basis("basis-structure-stage-1", "stage_structure_decisions[stage-1]"),
                 }
@@ -206,25 +234,35 @@ def main() -> int:
             per_stage_agent_allocation=[
                 {
                     "stage_id": "stage-1",
-                    "agent_count": 1,
-                    "count_reason": "One verifier is enough for this minimal positive demo.",
+                    "agent_count": 2,
+                    "count_reason": "One analyst and one verifier are enough for this minimal positive demo.",
                     "decision_basis": basis("basis-allocation-stage-1", "per_stage_agent_allocation[stage-1]"),
                     "agents": [
                         {
+                            "role": "analyst",
+                            "task": "Analyze structure.",
+                            "inputs": ["objective"],
+                            "outputs": ["answer_plan"],
+                            "ownership_boundary": "Prompt-local analysis.",
+                            "write_authority": "none",
+                            "handoff_target": "analyze-task",
+                            "decision_basis": basis("basis-agent-stage-1-analyst", "node:analyze-task"),
+                        },
+                        {
                             "role": "verifier",
                             "task": "Verify structure.",
-                            "inputs": ["objective"],
+                            "inputs": ["answer_plan"],
                             "outputs": ["test_report"],
                             "ownership_boundary": "Read-only schema validation.",
                             "write_authority": "none",
-                            "handoff_target": "complete",
-                            "decision_basis": basis("basis-agent-stage-1-verifier", "node:verify"),
+                            "handoff_target": "verify-answer-plan",
+                            "decision_basis": basis("basis-agent-stage-1-verifier", "node:verify-answer-plan"),
                         }
                     ],
                 }
             ],
             plan_derivation_trace=[
-                "basis-structure-stage-1: stage-1 selected review_gate, producing final node verify."
+                "basis-structure-stage-1: stage-1 selected analysis then review_gate, producing final nodes analyze-task and verify-answer-plan."
             ],
             draft_plan_review={
                 "review_id": "draft-review-1",
@@ -243,10 +281,10 @@ def main() -> int:
                     {
                         "finding_id": "draft-finding-1",
                         "severity": "info",
-                        "target": "workflow_skeleton.nodes[verify]",
-                        "finding": "The draft has a terminal read-only verification gate and no unsafe edge.",
-                        "recommendation": "Keep the single verifier for this compiler demo.",
-                        "decision_basis": basis("basis-draft-review-1", "workflow_skeleton.nodes[verify]"),
+                        "target": "workflow_skeleton.nodes[verify-answer-plan]",
+                        "finding": "The draft has an analysis node followed by a terminal read-only verification gate.",
+                        "recommendation": "Keep the analyst and verifier for this compiler demo.",
+                        "decision_basis": basis("basis-draft-review-1", "workflow_skeleton.nodes[verify-answer-plan]"),
                     }
                 ],
                 "missing_capabilities": ["none"],
@@ -254,7 +292,7 @@ def main() -> int:
                     {
                         "change_id": "draft-change-1",
                         "change_type": "no_change",
-                        "target": "workflow_skeleton.nodes[verify]",
+                        "target": "workflow_skeleton.nodes[verify-answer-plan]",
                         "rationale": "The draft structure is sufficient for this positive compiler demo.",
                     }
                 ],
@@ -262,25 +300,42 @@ def main() -> int:
                     {
                         "change_id": "draft-change-1",
                         "applied": True,
-                        "final_targets": ["workflow_skeleton.nodes[verify]"],
+                        "final_targets": ["workflow_skeleton.nodes[analyze-task]", "workflow_skeleton.nodes[verify-answer-plan]"],
                         "result": "Final workflow keeps the reviewed verifier node.",
                     }
                 ],
                 "rejected_changes": [],
-                "final_structure_summary": "The final graph has one read-only verifier and complete review evidence.",
+                "final_structure_summary": "The final graph has one analyst, one read-only verifier, and complete review evidence.",
             },
             experience_rationale=["No experience pattern is required for this compiler demo.", "The self-review schema is local."],
         ),
         task_profile=TASK_PROFILE,
         work_assignment_plan=[
             {
-                "node_id": "verify",
+                "node_id": "analyze-task",
+                "role": "analyst",
+                "stage_id": "stage-1",
+                "agent_type": "specialist",
+                "input_schema": {
+                    "required": ["objective", "workflow_skeleton"],
+                    "upstream_nodes": [],
+                },
+                "output_schema": {"required": ["answer_plan"]},
+                "ownership_boundary": "Prompt-local compiler schema analysis.",
+                "parallel_safe": False,
+                "parallel_safety_reason": "Verifier depends on this analysis artifact.",
+                "failure_takeover": "Overlooker or compiler rejects the plan and asks Director to replan.",
+                "selection_basis": "Analyst selected to satisfy analysis task-family alignment.",
+                "capability_needs": ["repo_read"],
+            },
+            {
+                "node_id": "verify-answer-plan",
                 "role": "verifier",
                 "stage_id": "stage-1",
                 "agent_type": "verification",
                 "input_schema": {
                     "required": ["objective", "workflow_skeleton", "node_instantiations"],
-                    "upstream_nodes": [],
+                    "upstream_nodes": ["analyze-task"],
                 },
                 "output_schema": {"required": ["test_report"]},
                 "ownership_boundary": "Read-only compiler schema verification.",
@@ -293,8 +348,22 @@ def main() -> int:
         ],
         permission_plan=[
             {
-                "node_id": "phasef-verify",
-                "skeleton_node_id": "verify",
+                "node_id": "phasef-analyze-task",
+                "skeleton_node_id": "analyze-task",
+                "permission_intents": ["read_repo"],
+                "minimum_boundary": {
+                    "read_paths": ["."],
+                    "write_paths": [],
+                    "allowed_commands": [],
+                    "network": "none",
+                    "secret_access": False,
+                },
+                "why_needed": "Read-only schema analysis needs local planning artifacts only.",
+                "fallback_if_denied": "Fail compiler validation and request Director replan.",
+            },
+            {
+                "node_id": "phasef-verify-answer-plan",
+                "skeleton_node_id": "verify-answer-plan",
                 "permission_intents": ["read_repo"],
                 "minimum_boundary": {
                     "read_paths": ["."],
@@ -309,8 +378,33 @@ def main() -> int:
         ],
         node_instantiations=[
             NodeInstantiation(
+                node=analyze_node,
+                skeleton_node_id="analyze-task",
+                permission_grounding=PermissionGroundingReport(
+                    node_id=analyze_node.node_id,
+                    sandbox_profile=SandboxProfile(
+                        network="none",
+                        allowed_read_paths=["."],
+                        allowed_write_paths=[],
+                        allowed_commands=[],
+                        justification="Analysis is read-only.",
+                    ),
+                    grounded_by=["repo_policy.allowed_read_paths"],
+                ),
+                instantiation_principles={
+                    "stage_id": "stage-1",
+                    "skeleton_node_id": "analyze-task",
+                    "executor_principle": "codex_cli is selected because the runtime workers are agents.",
+                    "prompt_principle": "Prompt scope is limited to read-only analysis.",
+                    "permission_principle": "Only read access is grounded by repo policy.",
+                    "evidence_principle": "log, sandbox_events, and resource_report show execution evidence.",
+                    "handoff_principle": "The analyst output is consumed by the verifier.",
+                    "decision_basis": basis("basis-instantiation-analyze", "node_instantiations[phasef-analyze-task]"),
+                },
+            ),
+            NodeInstantiation(
                 node=node,
-                skeleton_node_id="verify",
+                skeleton_node_id="verify-answer-plan",
                 permission_grounding=PermissionGroundingReport(
                     node_id=node.node_id,
                     sandbox_profile=SandboxProfile(
@@ -324,13 +418,13 @@ def main() -> int:
                 ),
                 instantiation_principles={
                     "stage_id": "stage-1",
-                    "skeleton_node_id": "verify",
+                    "skeleton_node_id": "verify-answer-plan",
                     "executor_principle": "codex_cli is selected because the runtime workers are agents.",
                     "prompt_principle": "Prompt scope is limited to read-only verification.",
                     "permission_principle": "Only read access is grounded by repo policy.",
                     "evidence_principle": "log, sandbox_events, and resource_report show execution evidence.",
                     "handoff_principle": "The verifier is terminal in this compiler demo.",
-                    "decision_basis": basis("basis-instantiation-verify", "node_instantiations[phasef-verify]"),
+                    "decision_basis": basis("basis-instantiation-verify", "node_instantiations[phasef-verify-answer-plan]"),
                 },
             )
         ],
