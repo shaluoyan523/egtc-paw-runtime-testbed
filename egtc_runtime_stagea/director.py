@@ -1712,6 +1712,11 @@ Rules:
         estimated_agents = base_agents + (2 if high_uncertainty and "contest_reasoning" in families else 0)
         estimated_tokens = 6_000 + estimated_agents * 3_000
         estimated_wall_time = 120 + estimated_agents * 90
+        worth_multi_candidate = self._worth_multi_candidate(
+            objective,
+            families,
+            high_uncertainty=high_uncertainty,
+        )
 
         return {
             "primary_task_family": families[0],
@@ -1725,7 +1730,7 @@ Rules:
                 "estimated_agents": estimated_agents,
                 "estimated_tokens": estimated_tokens,
                 "estimated_wall_time_sec": estimated_wall_time,
-                "worth_multi_candidate": bool("contest_reasoning" in families or high_uncertainty),
+                "worth_multi_candidate": worth_multi_candidate,
             },
             "budget_gate": {
                 "max_agents_before_replan": max(estimated_agents, 1),
@@ -1736,6 +1741,49 @@ Rules:
             "escalation_condition": "Escalate when required knowledge source or permission is unavailable, verifier reports ambiguity, or retries repeat the same failure.",
             "cheaper_alternative": "Use a single-agent cheap path when all required knowledge is in prompt and verification is direct.",
         }
+
+    def _worth_multi_candidate(
+        self,
+        objective: str,
+        families: list[str],
+        *,
+        high_uncertainty: bool,
+    ) -> bool:
+        lower = objective.lower()
+        if "contest_reasoning" in families:
+            return True
+        if "retrieval" in families:
+            return self._objective_has_any(
+                lower,
+                [
+                    "conflicting sources",
+                    "evidence conflict",
+                    "multiple answers",
+                    "ambiguous sources",
+                    "uncertain answer",
+                ],
+            )
+        if "finance_calculation" in families:
+            return self._objective_has_any(
+                lower,
+                ["scenario", "sensitivity", "multiple methods", "compare methods"],
+            )
+        if "planning_state_transition" in families:
+            return self._objective_has_any(
+                lower,
+                ["multiple valid plans", "ambiguous transitions", "compare plans"],
+            )
+        if "terminal_execution" in families:
+            return False
+        if "code_repair" in families:
+            return bool(
+                high_uncertainty
+                and self._objective_has_any(
+                    lower,
+                    ["multi-module", "large patch", "multiple packages", "architecture"],
+                )
+            )
+        return False
 
     def _work_assignment_plan_from_skeleton(
         self,
