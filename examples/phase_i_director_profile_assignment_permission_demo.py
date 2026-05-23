@@ -11,7 +11,6 @@ sys.path.insert(0, str(ROOT))
 from egtc_runtime_stagea.compiler import WorkflowCompiler
 from egtc_runtime_stagea.director import DirectorAgentV1
 from egtc_runtime_stagea.experience import ExperienceLibrary
-from egtc_runtime_stagea.phaseb_models import structured
 from egtc_runtime_stagea.repo_policy import RepoPolicyInferencer
 
 
@@ -22,6 +21,10 @@ CASES = [
         "retrieval",
         {"external_fact_evidence"},
         {"network_or_local_corpus"},
+        {"research-sources", "answer-synthesis", "source-verify"},
+        set(),
+        {"dataset_read", "browser"},
+        False,
     ),
     (
         "finance",
@@ -29,6 +32,10 @@ CASES = [
         "finance_calculation",
         {"formula_check"},
         {"network_or_local_corpus"},
+        {"collect-financial-inputs", "calculate-answer", "formula-verify"},
+        set(),
+        {"finance_calculator"},
+        False,
     ),
     (
         "swe",
@@ -36,6 +43,10 @@ CASES = [
         "code_repair",
         {"unit_tests"},
         {"repo", "tool_execution"},
+        {"explore-context", "explore-tests", "implement", "verify"},
+        set(),
+        {"write_patch", "run_tests"},
+        False,
     ),
     (
         "terminal",
@@ -43,6 +54,10 @@ CASES = [
         "terminal_execution",
         {"container_test"},
         {"tool_execution"},
+        {"plan-terminal-actions", "execute-checkpoint", "verify-checkpoint"},
+        set(),
+        {"run_shell", "container_exec"},
+        False,
     ),
     (
         "plancraft",
@@ -50,6 +65,10 @@ CASES = [
         "planning_state_transition",
         {"state_transition_check"},
         {"prompt"},
+        {"ambiguity-check", "state-plan", "transition-verify"},
+        set(),
+        {"read_repo"},
+        False,
     ),
     (
         "opendeepthink",
@@ -57,6 +76,21 @@ CASES = [
         "contest_reasoning",
         {"judge"},
         {"tool_execution"},
+        {"candidate-generate", "candidate-judge", "solution-synthesis", "final-verify"},
+        set(),
+        {"run_shell"},
+        True,
+    ),
+    (
+        "analysis",
+        "Prompt-local summary task: compare two provided options using only prompt facts.",
+        "analysis",
+        {"human_judgment"},
+        {"prompt"},
+        {"analyze-task", "verify-answer-plan"},
+        set(),
+        {"read_repo"},
+        False,
     ),
 ]
 
@@ -72,7 +106,7 @@ def main() -> int:
 
     profile_results: dict[str, dict[str, object]] = {}
     all_profiles_ok = True
-    for case_id, objective, expected_family, expected_verification, expected_sources in CASES:
+    for case_id, objective, expected_family, expected_verification, expected_sources, _, _, _, expected_multi in CASES:
         diagnosis = director.diagnose(objective, repo_policy)
         profile = diagnosis.task_profile
         families = set(profile.get("task_families", []))
@@ -85,6 +119,7 @@ def main() -> int:
             and bool(profile.get("predicted_failure_modes"))
             and profile.get("estimated_budget", {}).get("estimated_agents", 0) >= 1
             and isinstance(profile.get("estimated_budget", {}).get("worth_multi_candidate"), bool)
+            and profile.get("estimated_budget", {}).get("worth_multi_candidate") is expected_multi
         )
         all_profiles_ok = all_profiles_ok and case_ok
         profile_results[case_id] = {
@@ -96,25 +131,73 @@ def main() -> int:
             "estimated_budget": profile.get("estimated_budget"),
         }
 
-    workspace = runtime_root / "model_director"
-    objective = (
-        "SWE-bench complex code repair task: replace Codex-only agent binding with provider-backed "
-        "Director, Worker, Overlooker units, with repo tests and bounded write ownership."
-    )
-    blueprint = director.plan_with_model_director(
-        objective,
-        repo_policy,
-        workspace,
-        model_provider="deterministic",
-        model="deterministic-director",
-        timeout_sec=240,
-    )
-    compiled = WorkflowCompiler().compile(blueprint, experience_library=library)
-    finding_codes = [finding.code for finding in compiled.findings]
+    fallback_results: dict[str, dict[str, object]] = {}
+    all_fallbacks_ok = True
+    compiler = WorkflowCompiler()
+    first_compiled = None
+    first_blueprint = None
+    for case_id, objective, expected_family, _, _, expected_nodes, forbidden_nodes, expected_intents, _ in CASES:
+        workspace = runtime_root / f"model_director_{case_id}"
+        blueprint = director.plan_with_model_director(
+            objective,
+            repo_policy,
+            workspace,
+            model_provider="deterministic",
+            model="deterministic-director",
+            timeout_sec=240,
+        )
+        compiled = compiler.compile(blueprint, experience_library=library)
+        if first_compiled is None:
+            first_compiled = compiled
+            first_blueprint = blueprint
+        node_ids = {node.node_id for node in blueprint.workflow_skeleton.nodes}
+        skeleton_ids_by_inst = {
+            inst.skeleton_node_id: inst.node.node_id
+            for inst in blueprint.node_instantiations
+        }
+        intents = {
+            intent
+            for item in blueprint.permission_plan
+            for intent in item.get("permission_intents", [])
+        }
+        write_intents = [
+            item
+            for item in blueprint.permission_plan
+            if "write_patch" in item.get("permission_intents", [])
+        ]
+        case_ok = (
+            compiled.accepted
+            and blueprint.task_profile.get("primary_task_family") == expected_family
+            and expected_nodes.issubset(node_ids)
+            and not forbidden_nodes.intersection(node_ids)
+            and expected_intents.issubset(intents)
+            and (expected_family == "code_repair" or not write_intents)
+        )
+        all_fallbacks_ok = all_fallbacks_ok and case_ok
+        fallback_results[case_id] = {
+            "ok": case_ok,
+            "compiled": compiled.accepted,
+            "task_family": blueprint.task_profile.get("primary_task_family"),
+            "topology": blueprint.workflow_skeleton.topology,
+            "node_ids": sorted(node_ids),
+            "instantiation_map": skeleton_ids_by_inst,
+            "permission_intents": sorted(intents),
+            "write_intent_nodes": [item.get("skeleton_node_id") for item in write_intents],
+            "finding_codes": [finding.code for finding in compiled.findings],
+        }
+
+    compiled = first_compiled
+    blueprint = first_blueprint
+    finding_codes = [finding.code for finding in compiled.findings] if compiled else []
 
     output = {
         "profiles": profile_results,
-        "compiled": structured(compiled),
+        "fallback_model_director": fallback_results,
+        "compiled_summary": {
+            "accepted": compiled.accepted if compiled else False,
+            "blueprint_id": compiled.blueprint_id if compiled else "",
+            "finding_codes": finding_codes,
+        },
         "task_profile": blueprint.task_profile,
         "execution_estimate": blueprint.workflow_skeleton.execution_estimate,
         "work_assignment_count": len(blueprint.work_assignment_plan),
@@ -125,11 +208,12 @@ def main() -> int:
             for item in blueprint.permission_plan
         ],
         "finding_codes": finding_codes,
-        "workspace": str(workspace),
+        "workspace": str(runtime_root),
     }
     print(json.dumps(output, indent=2, sort_keys=True))
     return 0 if (
         all_profiles_ok
+        and all_fallbacks_ok
         and compiled.accepted
         and blueprint.task_profile
         and blueprint.workflow_skeleton.execution_estimate
