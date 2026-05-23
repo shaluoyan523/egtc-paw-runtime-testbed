@@ -110,6 +110,10 @@ class WorkflowCompiler:
 
         findings.extend(self._check_experience_usage(blueprint, experience_library))
         findings.extend(self._check_director_deliberation(blueprint))
+        if self._is_director_blueprint(blueprint):
+            findings.extend(self._check_task_profile(blueprint))
+            findings.extend(self._check_work_assignment_plan(blueprint))
+            findings.extend(self._check_permission_plan(blueprint))
 
         accepted = not any(finding.severity == "error" for finding in findings)
         return CompiledWorkflow(
@@ -117,6 +121,19 @@ class WorkflowCompiler:
             blueprint_id=blueprint.blueprint_id,
             executable_nodes=[inst.node for inst in blueprint.node_instantiations] if accepted else [],
             findings=findings,
+        )
+
+    def _is_director_blueprint(self, blueprint: WorkflowBlueprint) -> bool:
+        return (
+            (
+                blueprint.director_id == "director-agent-v1"
+                and blueprint.director_mode in {"codex", "model_agent"}
+            )
+            or bool(blueprint.director_skill_usage)
+            or bool(blueprint.task_profile)
+            or bool(blueprint.task_diagnosis.task_profile)
+            or bool(blueprint.work_assignment_plan)
+            or bool(blueprint.permission_plan)
         )
 
     def _check_node(
@@ -373,6 +390,8 @@ class WorkflowCompiler:
         findings: list[CompilerFinding] = []
         if blueprint.director_mode not in {"codex", "model_agent"}:
             return findings
+        if not self._is_director_blueprint(blueprint):
+            return findings
         director_label = "Agent Director"
         skeleton = blueprint.workflow_skeleton
         total_agents = skeleton.agent_allocation.get("total_agents")
@@ -436,6 +455,19 @@ class WorkflowCompiler:
                     f"{director_label} scaling_policy must include non-empty scale triggers and expansion strategy.",
                 )
             )
+        else:
+            findings.extend(self._check_scaling_policy_detail(scaling, director_label))
+        estimate = skeleton.execution_estimate
+        if not isinstance(estimate, dict) or not estimate:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_missing_execution_estimate",
+                    f"{director_label} must include workflow_skeleton.execution_estimate for cost and stop/escalation planning.",
+                )
+            )
+        else:
+            findings.extend(self._check_execution_estimate(estimate))
         if len(skeleton.experience_rationale) < 2:
             findings.append(
                 CompilerFinding(
@@ -448,6 +480,447 @@ class WorkflowCompiler:
         findings.extend(self._check_director_planning_skill(skeleton))
         findings.extend(self._check_director_draft_plan_review(skeleton))
         findings.extend(self._check_node_selection_principles(blueprint))
+        return findings
+
+    def _check_task_profile(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
+        profile = blueprint.task_profile or blueprint.task_diagnosis.task_profile
+        if not isinstance(profile, dict) or not profile:
+            return [
+                CompilerFinding(
+                    "error",
+                    "director_missing_task_profile",
+                    "Director must emit task_profile with task family, verification, knowledge, failure modes, and budget estimates.",
+                )
+            ]
+        findings: list[CompilerFinding] = []
+        required = {
+            "primary_task_family",
+            "task_families",
+            "verification_methods",
+            "knowledge_sources",
+            "predicted_failure_modes",
+            "estimated_difficulty",
+            "estimated_budget",
+            "budget_gate",
+            "stop_condition",
+            "escalation_condition",
+            "cheaper_alternative",
+        }
+        missing = sorted(required - set(profile))
+        if missing:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_task_profile_missing_keys",
+                    f"task_profile is missing keys: {missing}",
+                )
+            )
+        for key in ["task_families", "verification_methods", "knowledge_sources", "predicted_failure_modes"]:
+            value = profile.get(key)
+            if not isinstance(value, list) or not value:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_profile_empty_list",
+                        f"task_profile.{key} must be a non-empty list.",
+                    )
+                )
+        for key in ["primary_task_family", "estimated_difficulty", "stop_condition", "escalation_condition", "cheaper_alternative"]:
+            value = profile.get(key)
+            if not isinstance(value, str) or not value.strip():
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_profile_empty_value",
+                        f"task_profile.{key} must be a non-empty string.",
+                    )
+                )
+        budget = profile.get("estimated_budget")
+        if not isinstance(budget, dict):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_task_profile_missing_estimated_budget",
+                    "task_profile.estimated_budget must be an object.",
+                )
+            )
+        else:
+            for key in ["estimated_agents", "estimated_tokens", "estimated_wall_time_sec"]:
+                value = budget.get(key)
+                if not isinstance(value, int) or value <= 0:
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_task_profile_invalid_budget_value",
+                            f"task_profile.estimated_budget.{key} must be a positive integer.",
+                        )
+                    )
+            if not isinstance(budget.get("worth_multi_candidate"), bool):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_task_profile_missing_multi_candidate_judgment",
+                        "task_profile.estimated_budget.worth_multi_candidate must say whether multi-candidate work is worth it.",
+                    )
+                )
+        return findings
+
+    def _check_execution_estimate(self, estimate: dict[str, Any]) -> list[CompilerFinding]:
+        findings: list[CompilerFinding] = []
+        required = {
+            "estimated_agents",
+            "estimated_tokens",
+            "estimated_wall_time_sec",
+            "expected_success_probability",
+            "budget_gate",
+            "stop_condition",
+            "escalation_condition",
+            "cheaper_alternative",
+        }
+        missing = sorted(required - set(estimate))
+        if missing:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_execution_estimate_missing_keys",
+                    f"workflow_skeleton.execution_estimate is missing keys: {missing}",
+                )
+            )
+        for key in ["estimated_agents", "estimated_tokens", "estimated_wall_time_sec"]:
+            value = estimate.get(key)
+            if not isinstance(value, int) or value <= 0:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_execution_estimate_invalid_integer",
+                        f"workflow_skeleton.execution_estimate.{key} must be a positive integer.",
+                    )
+                )
+        probability = estimate.get("expected_success_probability")
+        if not isinstance(probability, int | float) or probability < 0 or probability > 1:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_execution_estimate_invalid_probability",
+                    "workflow_skeleton.execution_estimate.expected_success_probability must be between 0 and 1.",
+                )
+            )
+        for key in ["stop_condition", "escalation_condition", "cheaper_alternative"]:
+            value = estimate.get(key)
+            if not isinstance(value, str) or not value.strip():
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_execution_estimate_empty_value",
+                        f"workflow_skeleton.execution_estimate.{key} must be non-empty.",
+                    )
+                )
+        if not isinstance(estimate.get("budget_gate"), dict) or not estimate.get("budget_gate"):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_execution_estimate_missing_budget_gate",
+                    "workflow_skeleton.execution_estimate.budget_gate must be a non-empty object.",
+                )
+            )
+        return findings
+
+    def _check_work_assignment_plan(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
+        plan = blueprint.work_assignment_plan
+        if not isinstance(plan, list) or not plan:
+            return [
+                CompilerFinding(
+                    "error",
+                    "director_missing_work_assignment_plan",
+                    "Director must emit work_assignment_plan with per-agent schemas, ownership, parallelism, failure takeover, selection basis, and capability needs.",
+                )
+            ]
+        findings: list[CompilerFinding] = []
+        skeleton_ids = {node.node_id for node in blueprint.workflow_skeleton.nodes}
+        assigned_ids = {
+            str(item.get("node_id"))
+            for item in plan
+            if isinstance(item, dict) and item.get("node_id")
+        }
+        missing_nodes = sorted(skeleton_ids - assigned_ids)
+        if missing_nodes:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_assignment_missing_nodes",
+                    f"work_assignment_plan is missing skeleton nodes: {missing_nodes}",
+                )
+            )
+        required = {
+            "node_id",
+            "role",
+            "stage_id",
+            "agent_type",
+            "input_schema",
+            "output_schema",
+            "ownership_boundary",
+            "parallel_safe",
+            "parallel_safety_reason",
+            "failure_takeover",
+            "selection_basis",
+            "capability_needs",
+        }
+        for index, item in enumerate(plan):
+            if not isinstance(item, dict):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_assignment_invalid_record",
+                        f"work_assignment_plan[{index}] must be an object.",
+                    )
+                )
+                continue
+            missing = sorted(required - set(item))
+            if missing:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_assignment_missing_keys",
+                        f"work_assignment_plan[{index}] is missing keys: {missing}",
+                        str(item.get("node_id")) if item.get("node_id") else None,
+                    )
+                )
+            for key in ["input_schema", "output_schema"]:
+                if not isinstance(item.get(key), dict) or not item.get(key):
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_assignment_invalid_schema",
+                            f"work_assignment_plan[{index}].{key} must be a non-empty object.",
+                            str(item.get("node_id")) if item.get("node_id") else None,
+                        )
+                    )
+            if not isinstance(item.get("parallel_safe"), bool):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_assignment_invalid_parallel_flag",
+                        f"work_assignment_plan[{index}].parallel_safe must be boolean.",
+                        str(item.get("node_id")) if item.get("node_id") else None,
+                    )
+                )
+            if not isinstance(item.get("capability_needs"), list) or not item.get("capability_needs"):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_assignment_missing_capabilities",
+                        f"work_assignment_plan[{index}].capability_needs must be non-empty.",
+                        str(item.get("node_id")) if item.get("node_id") else None,
+                    )
+                )
+        return findings
+
+    def _check_permission_plan(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
+        plan = blueprint.permission_plan
+        if not isinstance(plan, list) or not plan:
+            return [
+                CompilerFinding(
+                    "error",
+                    "director_missing_permission_plan",
+                    "Director must emit permission_plan with per-node permission_intents, minimal boundary, fallback, and secret_access=false.",
+                )
+            ]
+        findings: list[CompilerFinding] = []
+        instantiated_ids = {inst.node.node_id for inst in blueprint.node_instantiations}
+        planned_ids = {
+            str(item.get("node_id"))
+            for item in plan
+            if isinstance(item, dict) and item.get("node_id")
+        }
+        missing_nodes = sorted(instantiated_ids - planned_ids)
+        if missing_nodes:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_permission_plan_missing_nodes",
+                    f"permission_plan is missing node instantiations: {missing_nodes}",
+                )
+            )
+        allowed_intents = {
+            "read_repo",
+            "write_patch",
+            "run_tests",
+            "run_shell",
+            "network_search",
+            "dataset_read",
+            "container_exec",
+            "finance_calculator",
+            "browser",
+        }
+        for index, item in enumerate(plan):
+            if not isinstance(item, dict):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_permission_plan_invalid_record",
+                        f"permission_plan[{index}] must be an object.",
+                    )
+                )
+                continue
+            node_id = str(item.get("node_id") or "")
+            intents = item.get("permission_intents")
+            if not isinstance(intents, list) or not intents:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_permission_plan_missing_intents",
+                        "permission_plan.permission_intents must be a non-empty list.",
+                        node_id or None,
+                    )
+                )
+                intents = []
+            unknown = sorted({str(intent) for intent in intents} - allowed_intents)
+            if unknown:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_permission_plan_unknown_intent",
+                        f"permission_plan has unknown intents: {unknown}",
+                        node_id or None,
+                    )
+                )
+            boundary = item.get("minimum_boundary")
+            if not isinstance(boundary, dict):
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_permission_plan_missing_boundary",
+                        "permission_plan.minimum_boundary must be an object.",
+                        node_id or None,
+                    )
+                )
+                continue
+            if boundary.get("secret_access") is not False:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_permission_plan_secret_access",
+                        "permission_plan.minimum_boundary.secret_access must be false.",
+                        node_id or None,
+                    )
+                )
+            if "network_search" in intents and boundary.get("network") == "none":
+                findings.append(
+                    CompilerFinding(
+                        "warning",
+                        "director_permission_intent_network_blocked",
+                        "permission_plan requests network_search but boundary.network is none; runtime must route through permission review or local fallback.",
+                        node_id or None,
+                    )
+                )
+            if "write_patch" in intents:
+                write_paths = boundary.get("write_paths")
+                if not isinstance(write_paths, list) or not write_paths:
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_permission_write_without_boundary",
+                            "write_patch intent requires non-empty minimum_boundary.write_paths.",
+                            node_id or None,
+                        )
+                    )
+            if not isinstance(item.get("why_needed"), str) or not item.get("why_needed", "").strip():
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_permission_plan_missing_why",
+                        "permission_plan.why_needed must explain the permission need.",
+                        node_id or None,
+                    )
+                )
+            if not isinstance(item.get("fallback_if_denied"), str) or not item.get("fallback_if_denied", "").strip():
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_permission_plan_missing_fallback",
+                        "permission_plan.fallback_if_denied must explain the fallback.",
+                        node_id or None,
+                    )
+                )
+        return findings
+
+    def _check_scaling_policy_detail(
+        self,
+        scaling: dict[str, Any],
+        director_label: str,
+    ) -> list[CompilerFinding]:
+        findings: list[CompilerFinding] = []
+        if "decision_basis" not in scaling:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_scaling_policy_missing_decision_basis",
+                    f"{director_label} scaling_policy must include decision_basis for adaptive replanning.",
+                )
+            )
+        else:
+            findings.extend(
+                self._check_decision_basis(
+                    scaling,
+                    "workflow_skeleton.scaling_policy",
+                )
+            )
+
+        observations = scaling.get("observations_to_record")
+        required_observations = {
+            "candidate_count",
+            "comparison_count",
+            "validator_pass_rate",
+            "retry_count",
+            "replan_count",
+            "next_scaling_hint",
+        }
+        if not isinstance(observations, list) or not required_observations.issubset(
+            {str(item) for item in observations}
+        ):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_scaling_policy_missing_observations",
+                    (
+                        "scaling_policy.observations_to_record must include candidate_count, "
+                        "comparison_count, validator_pass_rate, retry_count, replan_count, and next_scaling_hint."
+                    ),
+                )
+            )
+
+        current_level = scaling.get("current_scale_level")
+        if current_level is not None and (
+            not isinstance(current_level, int) or current_level < 0 or current_level > 4
+        ):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_scaling_policy_invalid_level",
+                    "scaling_policy.current_scale_level must be an integer from 0 to 4 when present.",
+                )
+            )
+
+        if isinstance(current_level, int) and current_level >= 3:
+            budget_gate = scaling.get("budget_gate")
+            if not isinstance(budget_gate, dict) or not budget_gate:
+                findings.append(
+                    CompilerFinding(
+                        "error",
+                        "director_scaling_policy_missing_budget_gate",
+                        "High-scale policies must include a budget_gate before adding evolution or large population nodes.",
+                    )
+                )
+
+        scale_down = scaling.get("scale_down_triggers")
+        if scale_down is not None and (not isinstance(scale_down, list) or not scale_down):
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_scaling_policy_invalid_scale_down",
+                    "scaling_policy.scale_down_triggers must be a non-empty list when provided.",
+                )
+            )
         return findings
 
     def _check_director_skill_usage(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
@@ -496,10 +969,14 @@ class WorkflowCompiler:
                 )
             )
         required_fields = {
+            "task_profile",
+            "work_assignment_plan",
+            "permission_plan",
             "linear_requirement_flow",
             "stage_structure_decisions",
             "research_route_decisions",
             "per_stage_agent_allocation",
+            "scaling_policy",
             "plan_derivation_trace",
             "node_selection_principles",
             "instantiation_principles",

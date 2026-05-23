@@ -1,0 +1,108 @@
+{
+  "anti_signals": [
+    "low budget",
+    "低预算",
+    "subjective judgment",
+    "主观题",
+    "pairwise judge unreliable",
+    "single deterministic patch",
+    "不可并行生成候选"
+  ],
+  "applicability_signals": [
+    "OpenDeepThink",
+    "Bradley-Terry",
+    "BT aggregation",
+    "population",
+    "parallel reasoning",
+    "pairwise comparison",
+    "mutation",
+    "candidate evolution",
+    "competitive programming",
+    "verifiable",
+    "多候选",
+    "种群",
+    "并行推理",
+    "两两比较",
+    "进化",
+    "变异",
+    "客观判题"
+  ],
+  "confidence_score": 8.0,
+  "description": "Use OpenDeepThink-style population evolution: sample a population of candidate solutions, compare candidates pairwise, aggregate noisy preferences with Bradley-Terry ranking, preserve elites, discard the bottom quartile, mutate the top three quarters with negative pairwise feedback, and finish with a denser BT selection round.",
+  "evidence_level": "direct",
+  "failure_count": 0,
+  "last_updated_at": 0.0,
+  "pattern_id": "seed-aggregation-opendeepthink-population-bt-evolution",
+  "pattern_type": "aggregation",
+  "recommended_structure": {
+    "default_hyperparameters": {
+      "K_pairwise_peers_per_candidate": 4,
+      "M_final_pairs_per_candidate": 10,
+      "T_generations": 3,
+      "lambda_l2": 0.01,
+      "population_size_n": 20
+    },
+    "feedback_policy": {
+      "critique_source": "pairwise_judge_rationales",
+      "mutation_scope": "top_75_percent_including_elites",
+      "negative_feedback_priority": true,
+      "restart_permission": "mutator_may_abandon_current_approach"
+    },
+    "selection_policy": {
+      "aggregator": "regularized_bradley_terry",
+      "discard": "bottom_25_percent",
+      "elite_preservation": "top_25_percent_carried_forward_unchanged",
+      "presentation_order": "randomized_per_pair_to_reduce_position_bias",
+      "tie_policy": "half_win_each_side"
+    },
+    "workflow": [
+      "candidate_sampling_n",
+      "pairwise_comparison_K_regular_matching",
+      "bradley_terry_ranking",
+      "elite_preservation_top_25",
+      "discard_bottom_25",
+      "feedback_mutation_top_75",
+      "repeat_T_generations",
+      "final_dense_pairwise_comparison_M",
+      "final_bradley_terry_top1_selection",
+      "external_or_local_validator"
+    ]
+  },
+  "required_evidence": [
+    "population_candidates",
+    "pairwise_comparison_matrix",
+    "pairwise_feedback_by_candidate",
+    "bt_scores_per_generation",
+    "elite_set",
+    "discard_set",
+    "mutation_outputs",
+    "final_bt_scores",
+    "validator_result"
+  ],
+  "risk_notes": [
+    "This pattern is expensive: the main OpenDeepThink setting uses about 285 calls per problem.",
+    "It amplifies partial competence rather than creating entirely new capability when no candidate is near correct.",
+    "It works best when pairwise judging can distinguish objectively correct from incorrect candidates.",
+    "On subjective or ambiguous tasks, BT selection can amplify judge noise.",
+    "A small two-proposer implementation is only a budget-limited approximation, not the full pattern."
+  ],
+  "source_refs": [
+    "https://arxiv.org/abs/2605.15177",
+    "https://github.com/ZhouShang0817/CF-73",
+    "OpenDeepThink: Parallel Reasoning via Bradley-Terry Aggregation, Algorithm 1 and Sections 3-5"
+  ],
+  "status": "active",
+  "success_count": 0,
+  "tags": [
+    "opendeepthink",
+    "bradley-terry",
+    "bt",
+    "population",
+    "evolution",
+    "pairwise",
+    "mutation",
+    "aggregation",
+    "test-time-scaling"
+  ],
+  "version": 1
+}

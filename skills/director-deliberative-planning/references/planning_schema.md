@@ -2,6 +2,12 @@
 
 Director output must include these additional `workflow_skeleton` fields.
 
+Director output must also include these top-level fields:
+
+- `task_profile`
+- `work_assignment_plan`
+- `permission_plan`
+
 ## decision_basis
 
 Every planning record below must include a `decision_basis` object:
@@ -25,6 +31,45 @@ Rules:
 - `invalidation_signals` must describe evidence that would make the decision wrong.
 - `correction_target` must name the workflow field, stage id, node id, or graph patch target to revise.
 - `correction_action` must say what to change during dynamic replanning.
+
+## task_profile
+
+Emit `task_profile` at the top level and copy the same object into `task_diagnosis.task_profile`:
+
+```json
+{
+  "primary_task_family": "code_repair",
+  "task_families": ["code_repair", "terminal_execution"],
+  "verification_methods": ["unit_tests", "container_test", "patch_review"],
+  "knowledge_sources": ["prompt", "repo", "local_dataset", "tool_execution"],
+  "predicted_failure_modes": ["ambiguity", "missing_dependency", "permission_insufficient", "environment_error", "patch_risk"],
+  "risk_level": "low|medium|high",
+  "estimated_difficulty": "low|medium|high",
+  "estimated_budget": {
+    "estimated_agents": 4,
+    "estimated_tokens": 18000,
+    "estimated_wall_time_sec": 480,
+    "worth_multi_candidate": true
+  },
+  "budget_gate": {
+    "max_agents_before_replan": 4,
+    "max_tokens_before_replan": 36000,
+    "max_wall_time_sec_before_replan": 900
+  },
+  "stop_condition": "Stop when required verification passes.",
+  "escalation_condition": "Escalate when permission, knowledge source, or verifier reliability is insufficient.",
+  "cheaper_alternative": "Use a single-agent cheap path when all knowledge is prompt-local and verification is direct."
+}
+```
+
+Task family examples:
+
+- BrowseComp: `retrieval`, verification by `external_fact_evidence` and source citation.
+- Finance-Agent: `finance_calculation`, verification by formula and calculator evidence.
+- SWE/Workbench: `code_repair`, verification by repo tests, patch review, and bounded ownership.
+- Terminal-Bench: `terminal_execution`, verification by shell/container/checkpoint artifacts.
+- PlanCraft: `planning_state_transition`, verification by ambiguity review and state transition checks.
+- OpenDeepThink-style tasks: `contest_reasoning`, verification by judge, sample tests, pairwise ranking, and adaptive scaling.
 
 ## linear_requirement_flow
 
@@ -170,6 +215,162 @@ List of records:
 ```
 
 The sum of `agent_count` values must equal `workflow_skeleton.agent_allocation.total_agents` and the number of final skeleton nodes.
+
+## work_assignment_plan
+
+Emit a top-level `work_assignment_plan` with one record per final skeleton node:
+
+```json
+{
+  "node_id": "explore-context",
+  "role": "explorer",
+  "stage_id": "stage-1",
+  "agent_type": "expert|tool_or_expert|verification|generalist|candidate_generation|candidate_selection",
+  "input_schema": {
+    "required": ["objective", "repo_policy", "upstream_artifacts"],
+    "upstream_nodes": []
+  },
+  "output_schema": {
+    "required": ["touchpoint_map", "analysis_log"]
+  },
+  "ownership_boundary": "Read-only source touchpoint discovery.",
+  "parallel_safe": true,
+  "parallel_safety_reason": "Read-only and no dependency on peer explorer output.",
+  "failure_takeover": "Overlooker may retry, fork from accepted upstream state, or request Director replan.",
+  "selection_basis": "Explorer is needed because implementation surface is unknown.",
+  "capability_needs": ["repo_read"]
+}
+```
+
+This field is not a duplicate of `per_stage_agent_allocation`: it is the execution contract for each concrete node after the Director chooses the graph.
+
+## permission_plan
+
+Emit a top-level `permission_plan` with one record per node instantiation:
+
+```json
+{
+  "node_id": "model-implement",
+  "skeleton_node_id": "implement",
+  "permission_intents": ["read_repo", "write_patch", "run_tests"],
+  "minimum_boundary": {
+    "read_paths": ["."],
+    "write_paths": ["egtc_runtime_stagea", "examples"],
+    "allowed_commands": [["python3", "-m", "compileall", "egtc_runtime_stagea"]],
+    "network": "none",
+    "secret_access": false
+  },
+  "why_needed": "Implementation needs bounded repo writes and repo-grounded tests.",
+  "fallback_if_denied": "Return to Overlooker permission review and request a lower-permission Director replan."
+}
+```
+
+Allowed `permission_intents`: `read_repo`, `write_patch`, `run_tests`, `run_shell`, `network_search`, `dataset_read`, `container_exec`, `finance_calculator`, `browser`.
+
+Rules:
+
+- `secret_access` must be false.
+- Research, finance, retrieval, and verification roles should not receive repo write permission unless explicitly justified by the task.
+- Network/browser/container intents must be routed through permission review when the repo policy or sandbox does not already ground them.
+
+## scaling_policy
+
+The Director must emit a `workflow_skeleton.scaling_policy` object. This policy is a learnable curriculum for the current graph, not a hard-coded algorithm name.
+
+```json
+{
+  "policy_id": "seed-scaling-adaptive-population-curriculum",
+  "current_scale_level": 2,
+  "requested_scale_level": 2,
+  "scale_level_name": "medium_pool_5_to_8_candidates_pairwise_K2_or_K3",
+  "scale_triggers": [
+    "candidate diversity is low",
+    "selection uncertainty is high",
+    "some candidates pass compile but fail semantic validation"
+  ],
+  "scale_down_triggers": [
+    "no candidate is near-correct after the current budget tier",
+    "pairwise judge disagrees with validator evidence"
+  ],
+  "max_planned_agents_for_current_task": 6,
+  "expansion_strategy": [
+    "increase candidate pool before adding mutation only when validator evidence shows partial competence",
+    "increase comparison density when ranking uncertainty remains high",
+    "route to research or a domain specialist before increasing population when all candidates share the same missing knowledge"
+  ],
+  "requires_replan_when": [
+    "validator pass rate stays zero after the selected scale level",
+    "token or latency budget is exceeded",
+    "Overlooker recommends Director replan"
+  ],
+  "observations_to_record": [
+    "candidate_count",
+    "comparison_count",
+    "mutation_rounds",
+    "ranking_entropy",
+    "validator_pass_rate",
+    "retry_count",
+    "replan_count",
+    "token_cost",
+    "latency",
+    "next_scaling_hint"
+  ],
+  "budget_gate": {
+    "max_candidate_count": 8,
+    "max_comparison_count": 24,
+    "max_mutation_rounds": 1,
+    "max_planned_agents": 8
+  },
+  "decision_basis": {
+    "basis_id": "basis-scaling-policy",
+    "source_refs": ["objective", "experience:seed-scaling-adaptive-population-curriculum"],
+    "matched_signals": ["complex verifiable task", "benchmark accuracy objective"],
+    "assumptions": ["The current budget can support a medium candidate pool."],
+    "invalidation_signals": ["All candidates fail for the same missing-domain reason.", "Validator is unavailable or unreliable."],
+    "confidence": "medium",
+    "correction_target": "workflow_skeleton.scaling_policy",
+    "correction_action": "Scale up, scale down, or route to research/specialists before recompiling the graph."
+  }
+}
+```
+
+Scale levels:
+
+- `0`: `single_candidate_baseline`
+- `1`: `small_pool_2_to_3_candidates_all_pairs`
+- `2`: `medium_pool_5_to_8_candidates_pairwise_K2_or_K3`
+- `3`: `evolution_loop_with_elites_and_mutation`
+- `4`: `large_population_BT_style_n12_to_n20_K4_T2_to_T3_M8_to_M10`
+
+Rules:
+
+- Do not jump to level 4 unless earlier evidence or task constraints justify the cost.
+- Do not add more candidate agents when the observed failure is missing knowledge; add research, retrieval, or a domain-specialist route first.
+- `observations_to_record` must include enough fields for workflow learning to decide whether to promote, demote, revise, scale up, or scale down the policy.
+- `decision_basis` must explain why the current scale is selected and what evidence would change it.
+
+## execution_estimate
+
+Emit under `workflow_skeleton.execution_estimate`:
+
+```json
+{
+  "estimated_agents": 4,
+  "estimated_tokens": 18000,
+  "estimated_wall_time_sec": 480,
+  "expected_success_probability": 0.72,
+  "budget_gate": {
+    "max_agents_before_replan": 4,
+    "max_tokens_before_replan": 36000,
+    "max_wall_time_sec_before_replan": 900
+  },
+  "stop_condition": "Stop when required verification passes.",
+  "escalation_condition": "Escalate when permissions, knowledge sources, or verifier reliability are insufficient.",
+  "cheaper_alternative": "Use one agent when the task is prompt-local and direct answer matching is enough."
+}
+```
+
+The estimate is a pre-run planning judgment. Runtime resource reports and workflow observations will later test whether the estimate was good.
 
 ## plan_derivation_trace
 

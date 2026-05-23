@@ -20,6 +20,15 @@ def build_deterministic_model_director_output(
 ) -> dict[str, Any]:
     selected_pattern_ids = _selected_pattern_ids(seed_matches)
     pattern_refs = [f"experience:{pattern_id}" for pattern_id in selected_pattern_ids]
+    scaling_pattern_refs = [
+        f"experience:{pattern_id}"
+        for pattern_id in selected_pattern_ids
+        if pattern_id
+        in {
+            "seed-scaling-adaptive-population-curriculum",
+            "seed-scaling-large-dynamic-hierarchy",
+        }
+    ] or pattern_refs[:1]
 
     nodes = [
         _skeleton_node(
@@ -144,10 +153,14 @@ def build_deterministic_model_director_output(
             "schema_sha256": skill_packet["schema_sha256"],
             "loaded": True,
             "applied_required_fields": [
+                "task_profile",
+                "work_assignment_plan",
+                "permission_plan",
                 "linear_requirement_flow",
                 "stage_structure_decisions",
                 "research_route_decisions",
                 "per_stage_agent_allocation",
+                "scaling_policy",
                 "plan_derivation_trace",
                 "node_selection_principles",
                 "instantiation_principles",
@@ -166,6 +179,7 @@ def build_deterministic_model_director_output(
             ],
             "experience_matches": _serialized_matches(seed_matches[:6]),
             "objective": objective,
+            "task_profile": _task_profile(objective, len(nodes)),
         },
         "workflow_skeleton": {
             "topology": "parallel_explore_single_writer_verify_model_agents",
@@ -217,14 +231,28 @@ def build_deterministic_model_director_output(
                 },
             ],
             "scaling_policy": {
+                "policy_id": "seed-scaling-adaptive-population-curriculum",
+                "current_scale_level": 2,
+                "requested_scale_level": 2,
+                "scale_level_name": "medium_pool_5_to_8_candidates_pairwise_K2_or_K3",
                 "scale_triggers": [
+                    "candidate diversity is low or duplicate strategies dominate",
+                    "selection uncertainty remains high after initial comparisons",
                     "explorers identify more than three independent write ownership areas",
                     "validation requires multiple incompatible environments",
                     "overlooker reports missing specialist knowledge or repeated same-failure retries",
                     "implementation diff spans unrelated packages or languages",
                 ],
+                "scale_down_triggers": [
+                    "no candidate is near-correct after the current budget tier",
+                    "all candidates fail for the same missing-knowledge reason",
+                    "pairwise or model judgment conflicts with validator evidence",
+                ],
                 "max_planned_agents_for_current_task": len(nodes),
                 "expansion_strategy": [
+                    "increase candidate pool only when validator evidence shows partial competence",
+                    "increase pairwise comparison density when ranking uncertainty remains high",
+                    "add mutation or rewrite rounds only after actionable negative feedback exists",
                     "split exploration by package or domain",
                     "add specialist workers only for disjoint write paths",
                     "add synthesis and integration review nodes before merge",
@@ -235,6 +263,52 @@ def build_deterministic_model_director_output(
                     "verification requires unavailable permissions",
                     "overlooker recommends request_director_replan",
                 ],
+                "observations_to_record": [
+                    "candidate_count",
+                    "comparison_count",
+                    "mutation_rounds",
+                    "ranking_entropy",
+                    "validator_pass_rate",
+                    "retry_count",
+                    "replan_count",
+                    "token_cost",
+                    "latency",
+                    "next_scaling_hint",
+                ],
+                "budget_gate": {
+                    "max_candidate_count": 8,
+                    "max_comparison_count": 24,
+                    "max_mutation_rounds": 1,
+                    "max_planned_agents": len(nodes),
+                },
+                "decision_basis": _basis(
+                    "basis-scaling-policy",
+                    [
+                        "objective",
+                        "workflow_skeleton.alternative_skeletons",
+                        *scaling_pattern_refs,
+                    ],
+                    [
+                        "complex verifiable task",
+                        "adaptive scaling should be learned from execution observations",
+                    ],
+                    "workflow_skeleton.scaling_policy",
+                    "Scale up, scale down, or route to research/specialists before recompiling the graph.",
+                ),
+            },
+            "execution_estimate": {
+                "estimated_agents": len(nodes),
+                "estimated_tokens": 18000,
+                "estimated_wall_time_sec": 480,
+                "expected_success_probability": 0.72,
+                "budget_gate": {
+                    "max_agents_before_replan": len(nodes),
+                    "max_tokens_before_replan": 36000,
+                    "max_wall_time_sec_before_replan": 900,
+                },
+                "stop_condition": "Stop when implementation evidence and read-only verification pass.",
+                "escalation_condition": "Escalate when exploration invalidates single-writer ownership or verification needs unavailable permissions.",
+                "cheaper_alternative": "Use one model_agent only when the task is prompt-local or an exact file/test target is already known.",
             },
             "deliberation_trace": [
                 "Compared single-agent, selected four-agent, and larger hierarchical candidates.",
@@ -387,6 +461,9 @@ def build_deterministic_model_director_output(
                 ["implement", "verify"],
             ],
         },
+        "task_profile": _task_profile(objective, len(nodes)),
+        "work_assignment_plan": _work_assignment_plan(nodes),
+        "permission_plan": _permission_plan(instantiations),
         "node_instantiations": instantiations,
     }
 
@@ -397,6 +474,7 @@ def _selected_pattern_ids(seed_matches: list[ExperienceMatch]) -> list[str]:
         "seed-handoff-artifact-chain",
         "seed-review-verification-aware-planning",
         "seed-role-overlooker-review-rework",
+        "seed-scaling-adaptive-population-curriculum",
         "seed-scaling-large-dynamic-hierarchy",
     ]
     available = [match.pattern.pattern_id for match in seed_matches]
@@ -404,9 +482,9 @@ def _selected_pattern_ids(seed_matches: list[ExperienceMatch]) -> list[str]:
     for pattern_id in preferred + available:
         if pattern_id in available and pattern_id not in selected:
             selected.append(pattern_id)
-        if len(selected) >= 4:
+        if len(selected) >= 6:
             break
-    return selected or available[:4]
+    return selected or available[:6]
 
 
 def _serialized_matches(matches: list[ExperienceMatch]) -> list[dict[str, Any]]:
@@ -423,6 +501,130 @@ def _serialized_matches(matches: list[ExperienceMatch]) -> list[dict[str, Any]]:
         }
         for match in matches
     ]
+
+
+def _task_profile(objective: str, estimated_agents: int) -> dict[str, Any]:
+    lower = objective.lower()
+    task_families = ["code_repair"]
+    if "terminal" in lower or "container" in lower:
+        task_families.append("terminal_execution")
+    if "browse" in lower or "finance" in lower:
+        task_families.append("retrieval")
+    if "opendeepthink" in lower or "judge" in lower:
+        task_families.append("contest_reasoning")
+    return {
+        "primary_task_family": task_families[0],
+        "task_families": task_families,
+        "verification_methods": ["unit_tests", "repo_tests", "patch_review"],
+        "knowledge_sources": ["prompt", "repo", "tool_execution", "experience_library"],
+        "predicted_failure_modes": [
+            "ambiguity",
+            "missing_dependency",
+            "patch_risk",
+            "test_environment_error",
+            "permission_insufficient",
+        ],
+        "risk_level": "medium",
+        "estimated_difficulty": "medium",
+        "estimated_budget": {
+            "estimated_agents": estimated_agents,
+            "estimated_tokens": 18000,
+            "estimated_wall_time_sec": 480,
+            "worth_multi_candidate": True,
+        },
+        "budget_gate": {
+            "max_agents_before_replan": estimated_agents,
+            "max_tokens_before_replan": 36000,
+            "max_wall_time_sec_before_replan": 900,
+        },
+        "stop_condition": "Stop when required repo verification evidence passes.",
+        "escalation_condition": "Escalate when verifier needs permissions or knowledge sources not in the plan.",
+        "cheaper_alternative": "Use a single-agent cheap path when all required knowledge is prompt-local and direct verification is available.",
+    }
+
+
+def _work_assignment_plan(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    assignments: list[dict[str, Any]] = []
+    for node in nodes:
+        role = str(node.get("role") or "worker")
+        phase = str(node.get("phase") or "analysis")
+        node_id = str(node.get("node_id") or "")
+        depends_on = [str(item) for item in node.get("depends_on", [])]
+        expected_outputs = [str(item) for item in node.get("expected_outputs", [])]
+        assignments.append(
+            {
+                "node_id": node_id,
+                "role": role,
+                "stage_id": node.get("node_selection_principles", {}).get("stage_id", phase),
+                "agent_type": (
+                    "verification"
+                    if role == "verifier"
+                    else ("tool_or_expert" if role == "explorer" else "generalist")
+                ),
+                "input_schema": {
+                    "required": ["objective", "upstream_artifacts", "permission_plan"],
+                    "upstream_nodes": depends_on,
+                },
+                "output_schema": {"required": expected_outputs or ["agent_report"]},
+                "ownership_boundary": (
+                    "Read-only discovery outputs only."
+                    if role == "explorer"
+                    else (
+                        "Read-only verification evidence."
+                        if role == "verifier"
+                        else "Bounded patch ownership under repo policy write paths."
+                    )
+                ),
+                "parallel_safe": not bool(depends_on) and role != "worker",
+                "parallel_safety_reason": (
+                    "Read-only and dependency-free."
+                    if not depends_on and role != "worker"
+                    else "Runs after declared upstream handoff."
+                ),
+                "failure_takeover": "Overlooker may fork from accepted upstream state or request Director replan.",
+                "selection_basis": f"{role} selected for {phase} because its outputs are required downstream.",
+                "capability_needs": (
+                    ["repo_read", "test"]
+                    if role == "verifier"
+                    else (["repo_read", "write_patch"] if role == "worker" else ["repo_read"])
+                ),
+            }
+        )
+    return assignments
+
+
+def _permission_plan(instantiations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    plans: list[dict[str, Any]] = []
+    for inst in instantiations:
+        grounding = inst.get("permission_grounding", {})
+        read_paths = grounding.get("allowed_read_paths", ["."])
+        write_paths = grounding.get("allowed_write_paths", [])
+        commands = grounding.get("allowed_commands", [])
+        network = grounding.get("network", "none")
+        intents = ["read_repo"]
+        if write_paths:
+            intents.append("write_patch")
+        if commands:
+            intents.append("run_tests" if inst.get("phase") == "verification" else "run_shell")
+        if network != "none":
+            intents.append("network_search")
+        plans.append(
+            {
+                "node_id": inst["node_id"],
+                "skeleton_node_id": inst["skeleton_node_id"],
+                "permission_intents": intents,
+                "minimum_boundary": {
+                    "read_paths": read_paths,
+                    "write_paths": write_paths,
+                    "allowed_commands": commands,
+                    "network": network,
+                    "secret_access": False,
+                },
+                "why_needed": grounding.get("justification", "Permission is grounded by repo policy."),
+                "fallback_if_denied": "Return to Overlooker permission review and request Director replan with a lower-permission path.",
+            }
+        )
+    return plans
 
 
 def _basis(

@@ -97,6 +97,8 @@ class WorkflowExperienceObservation:
     replan_count: int
     branch_candidate_count: int
     recommended_update: str
+    scaling_observations: dict[str, Any] = field(default_factory=dict)
+    reflection_attribution: dict[str, Any] = field(default_factory=dict)
     evidence_refs: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
 
@@ -194,13 +196,15 @@ class ExperienceLibrary:
                 signal for signal in pattern.applicability_signals if signal.lower() in text
             ]
             tag_hits = [tag for tag in pattern.tags if tag.lower() in text]
-            if not signal_hits and not tag_hits:
+            inferred_hits = self._inferred_signal_hits(text, pattern)
+            if not signal_hits and not tag_hits and not inferred_hits:
                 continue
             evidence = EVIDENCE_WEIGHT.get(pattern.evidence_level.lower(), 1)
             outcome_score = pattern.success_count - pattern.failure_count
             score = (
                 len(signal_hits) * 2
                 + len(tag_hits)
+                + len(inferred_hits) * 1.5
                 + evidence
                 + pattern.confidence_score
                 + max(-3, min(3, outcome_score))
@@ -209,11 +213,95 @@ class ExperienceLibrary:
                 ExperienceMatch(
                     pattern=pattern,
                     score=score,
-                    matched_signals=signal_hits + tag_hits,
+                    matched_signals=signal_hits + tag_hits + inferred_hits,
                 )
             )
         matches.sort(key=lambda match: (-match.score, match.pattern.pattern_id))
         return matches[:limit]
+
+    def _inferred_signal_hits(
+        self,
+        text: str,
+        pattern: ExperiencePattern,
+    ) -> list[str]:
+        if pattern.pattern_id != "seed-scaling-adaptive-population-curriculum":
+            return []
+
+        complexity_terms = [
+            "complex",
+            "difficult",
+            "hard",
+            "hardest",
+            "benchmark",
+            "最难",
+            "复杂",
+            "困难",
+            "难题",
+        ]
+        verifiable_terms = [
+            "accuracy",
+            "pass rate",
+            "validator",
+            "benchmark",
+            "test",
+            "compile",
+            "judge",
+            "准确率",
+            "通过率",
+            "校验",
+            "验证",
+            "测试",
+            "判题",
+        ]
+        scaling_terms = [
+            "scaling",
+            "scale",
+            "population",
+            "candidate",
+            "parallel",
+            "multiagent",
+            "multi-agent",
+            "token",
+            "latency",
+            "budget",
+            "扩展",
+            "扩大",
+            "候选",
+            "并行",
+            "多agent",
+            "多 agent",
+            "预算",
+            "耗时",
+        ]
+        learning_terms = [
+            "learn",
+            "learning",
+            "experience",
+            "improve",
+            "performance",
+            "paper",
+            "自我学习",
+            "经验",
+            "提升",
+            "性能",
+            "论文",
+        ]
+
+        has_complexity = any(term in text for term in complexity_terms)
+        has_verifiable = any(term in text for term in verifiable_terms)
+        has_scaling = any(term in text for term in scaling_terms)
+        has_learning = any(term in text for term in learning_terms)
+
+        hits: list[str] = []
+        if has_complexity and has_verifiable:
+            hits.append("inferred:complex_verifiable_task")
+        if has_complexity and has_scaling:
+            hits.append("inferred:complex_task_with_scaling_pressure")
+        if has_verifiable and has_learning:
+            hits.append("inferred:measured_learning_loop")
+        if has_scaling and has_learning:
+            hits.append("inferred:self_learning_scaling_request")
+        return hits
 
     def record_observation(self, observation: ExperienceObservation) -> None:
         self._validate_observation(observation)
@@ -374,6 +462,26 @@ class ExperienceLibrary:
             f" replan_count={observation.replan_count};"
             f" branch_candidate_count={observation.branch_candidate_count}."
         )
+        if observation.scaling_observations:
+            level = observation.scaling_observations.get("current_scale_level")
+            planned_agents = observation.scaling_observations.get("planned_agent_count")
+            next_hint = observation.scaling_observations.get("next_scaling_hint")
+            rationale += (
+                f" scaling_level={level};"
+                f" planned_agent_count={planned_agents};"
+                f" next_scaling_hint={next_hint}."
+            )
+        if observation.reflection_attribution:
+            categories = observation.reflection_attribution.get("categories")
+            primary = observation.reflection_attribution.get("primary_category")
+            recommended_learning = observation.reflection_attribution.get(
+                "recommended_learning"
+            )
+            rationale += (
+                f" reflection_primary={primary};"
+                f" reflection_categories={categories};"
+                f" reflection_learning={recommended_learning}."
+            )
         for pattern_id in observation.pattern_ids_used:
             proposal = ExperienceUpdateProposal(
                 proposal_id=f"workflow-exp-proposal-{uuid.uuid4().hex[:12]}",
@@ -645,6 +753,114 @@ def default_seed_patterns() -> list[ExperiencePattern]:
             tags=["aggregation", "ensemble", "proposer", "synthesis", "moa"],
         ),
         ExperiencePattern(
+            pattern_id="seed-aggregation-opendeepthink-population-bt-evolution",
+            pattern_type="aggregation",
+            description=(
+                "Use OpenDeepThink-style population evolution: sample candidate solutions, "
+                "compare them pairwise, aggregate noisy preferences with Bradley-Terry ranking, "
+                "preserve elites, discard the bottom quartile, mutate the top three quarters "
+                "with negative pairwise feedback, and finish with a denser BT selection round."
+            ),
+            applicability_signals=[
+                "OpenDeepThink",
+                "Bradley-Terry",
+                "BT aggregation",
+                "population",
+                "parallel reasoning",
+                "pairwise comparison",
+                "mutation",
+                "candidate evolution",
+                "competitive programming",
+                "verifiable",
+                "多候选",
+                "种群",
+                "并行推理",
+                "两两比较",
+                "进化",
+                "变异",
+                "客观判题",
+            ],
+            anti_signals=[
+                "low budget",
+                "低预算",
+                "subjective judgment",
+                "主观题",
+                "pairwise judge unreliable",
+                "single deterministic patch",
+                "不可并行生成候选",
+            ],
+            recommended_structure={
+                "workflow": [
+                    "candidate_sampling_n",
+                    "pairwise_comparison_K_regular_matching",
+                    "bradley_terry_ranking",
+                    "elite_preservation_top_25",
+                    "discard_bottom_25",
+                    "feedback_mutation_top_75",
+                    "repeat_T_generations",
+                    "final_dense_pairwise_comparison_M",
+                    "final_bradley_terry_top1_selection",
+                    "external_or_local_validator",
+                ],
+                "default_hyperparameters": {
+                    "population_size_n": 20,
+                    "K_pairwise_peers_per_candidate": 4,
+                    "T_generations": 3,
+                    "M_final_pairs_per_candidate": 10,
+                    "lambda_l2": 0.01,
+                },
+                "selection_policy": {
+                    "aggregator": "regularized_bradley_terry",
+                    "elite_preservation": "top_25_percent_carried_forward_unchanged",
+                    "discard": "bottom_25_percent",
+                    "tie_policy": "half_win_each_side",
+                    "presentation_order": "randomized_per_pair_to_reduce_position_bias",
+                },
+                "feedback_policy": {
+                    "critique_source": "pairwise_judge_rationales",
+                    "mutation_scope": "top_75_percent_including_elites",
+                    "negative_feedback_priority": True,
+                    "restart_permission": "mutator_may_abandon_current_approach",
+                },
+            },
+            required_evidence=[
+                "population_candidates",
+                "pairwise_comparison_matrix",
+                "pairwise_feedback_by_candidate",
+                "bt_scores_per_generation",
+                "elite_set",
+                "discard_set",
+                "mutation_outputs",
+                "final_bt_scores",
+                "validator_result",
+            ],
+            risk_notes=[
+                "This pattern is expensive: the main OpenDeepThink setting uses about 285 calls per problem.",
+                "It amplifies partial competence rather than creating entirely new capability when no candidate is near correct.",
+                "It works best when pairwise judging can distinguish objectively correct from incorrect candidates.",
+                "On subjective or ambiguous tasks, BT selection can amplify judge noise.",
+                "A small two-proposer implementation is only a budget-limited approximation, not the full pattern.",
+            ],
+            source_refs=[
+                "https://arxiv.org/abs/2605.15177",
+                "https://github.com/ZhouShang0817/CF-73",
+                "OpenDeepThink: Parallel Reasoning via Bradley-Terry Aggregation, Algorithm 1 and Sections 3-5",
+            ],
+            evidence_level="direct",
+            confidence_score=8.0,
+            tags=[
+                "opendeepthink",
+                "bradley-terry",
+                "bt",
+                "population",
+                "evolution",
+                "pairwise",
+                "mutation",
+                "aggregation",
+                "test-time-scaling",
+            ],
+        ),
+        ExperiencePattern(
             pattern_id="seed-topology-graph-of-agents-message-passing",
             pattern_type="topology",
             description="Represent collaboration as a typed agent graph with message passing when dependencies are non-linear and intermediate reasoning must be recombined.",
@@ -813,6 +1029,149 @@ def default_seed_patterns() -> list[ExperiencePattern]:
             evidence_level="direct",
             confidence_score=6.5,
             tags=["scaling", "hierarchy", "large-team", "director"],
+        ),
+        ExperiencePattern(
+            pattern_id="seed-scaling-adaptive-population-curriculum",
+            pattern_type="scaling_policy",
+            description=(
+                "Scale a multi-agent workflow through a learned curriculum rather than a dedicated "
+                "hard-coded algorithm: start with a small candidate pool, measure candidate quality "
+                "and selection uncertainty, then expand population size, comparison density, mutation "
+                "depth, verifier strength, or expert routing only when observations justify the extra budget."
+            ),
+            applicability_signals=[
+                "adaptive scaling",
+                "self learning",
+                "test-time scaling",
+                "population",
+                "candidate pool",
+                "benchmark",
+                "accuracy",
+                "hard cases",
+                "difficult",
+                "verifiable",
+                "reasoning",
+                "competitive programming",
+                "algorithm",
+                "validator",
+                "token",
+                "latency",
+                "budget",
+                "performance",
+                "pairwise judge",
+                "Bradley-Terry",
+                "mutation",
+                "scale up",
+                "gradually expand",
+                "自我学习",
+                "逐步扩大",
+                "动态扩容",
+                "候选池",
+                "最难",
+                "准确率",
+                "题目",
+                "竞赛",
+                "推理",
+                "判题",
+                "复杂任务",
+                "性能",
+                "论文",
+                "两两比较",
+                "变异",
+                "经验驱动",
+            ],
+            anti_signals=[
+                "strict low latency",
+                "低延迟",
+                "single deterministic operation",
+                "不可并行",
+                "no measurable validator",
+                "无评价指标",
+                "unbounded cost",
+            ],
+            recommended_structure={
+                "controller_node": "Director owns the scaling policy and updates it from observations; no separate hard-coded OpenDeepThink executor is required.",
+                "generic_primitives": [
+                    "candidate_sampling",
+                    "candidate_diversity_check",
+                    "pairwise_preference_judging",
+                    "ranking_aggregation",
+                    "elite_preservation",
+                    "weak_candidate_discard",
+                    "negative_feedback_mutation",
+                    "repair_or_rewrite",
+                    "external_or_local_validation",
+                    "experience_update",
+                ],
+                "ladder": [
+                    {"level": 0, "shape": "single_candidate_baseline", "use_when": "task appears easy or budget is extremely tight"},
+                    {"level": 1, "shape": "small_pool_2_to_3_candidates_all_pairs", "use_when": "uncertainty exists but no evidence yet justifies large scale"},
+                    {"level": 2, "shape": "medium_pool_5_to_8_candidates_pairwise_K2_or_K3", "use_when": "compile succeeds but semantic/sample failures persist, or candidates disagree materially"},
+                    {"level": 3, "shape": "evolution_loop_with_elites_and_mutation", "use_when": "at least one candidate is near-correct or pairwise critique identifies actionable failures"},
+                    {"level": 4, "shape": "large_population_BT_style_n12_to_n20_K4_T2_to_T3_M8_to_M10", "use_when": "task is objectively verifiable, budget supports breadth, and earlier levels show partial competence"},
+                ],
+                "scale_up_triggers": [
+                    "candidate_diversity_low_add_role_or_sampling_temperature",
+                    "selection_uncertainty_high_increase_pairwise_density",
+                    "some_candidates_compile_but_fail_samples_add_mutation_depth",
+                    "one_or_more_candidates_pass_samples_preserve_elites_and_mutate_neighbors",
+                    "all_candidates_fail_compile_add_compile_repair_before_more_population",
+                    "repeated_semantic_failure_route_to_retrieval_or_domain_expert_before_more_generation",
+                ],
+                "scale_down_triggers": [
+                    "no_candidate_near_correct_after_budget_tier",
+                    "pairwise_judge_disagrees_with_validator",
+                    "token_or_latency_budget_exceeded",
+                    "candidate_pool_collapses_to_duplicate_strategies",
+                ],
+                "observations_to_record": [
+                    "candidate_count",
+                    "comparison_count",
+                    "ranking_entropy",
+                    "candidate_diversity",
+                    "compile_rate",
+                    "validator_pass_rate",
+                    "repair_rescue_rate",
+                    "mutation_rescue_rate",
+                    "judge_validator_alignment",
+                    "token_cost",
+                    "latency",
+                    "successful_scale_level",
+                ],
+            },
+            required_evidence=[
+                "scale_level",
+                "scaling_decision_basis",
+                "candidate_metrics",
+                "pairwise_or_validator_metrics",
+                "budget_report",
+                "experience_update",
+            ],
+            risk_notes=[
+                "A scaling ladder can waste budget if it expands before detecting partial competence.",
+                "More candidates do not help when every candidate shares the same missing domain knowledge.",
+                "If repeated semantic failures occur, route to retrieval/editorial/domain expertise before increasing population.",
+                "The Director must explicitly compare scale-up and scale-down options after each round.",
+                "OpenDeepThink is treated as a high-scale point on this ladder, not as a special dedicated executor.",
+            ],
+            source_refs=[
+                "https://arxiv.org/abs/2605.15177",
+                "https://github.com/ZhouShang0817/CF-73",
+                "batch_multiagent_eval_20260518/runs/opendeepthink-pattern-only-comparison/PATTERN_ONLY_COMPARISON.md",
+                "batch_multiagent_eval_20260518/runs/opendeepthink-learning-loop/LEARNING_LOOP_REPORT.md",
+            ],
+            evidence_level="direct",
+            confidence_score=7.5,
+            tags=[
+                "adaptive-scaling",
+                "curriculum",
+                "population",
+                "bt",
+                "mutation",
+                "director",
+                "experience-learning",
+                "test-time-scaling",
+            ],
         ),
         ExperiencePattern(
             pattern_id="seed-generation-evolutionary-agent-search",

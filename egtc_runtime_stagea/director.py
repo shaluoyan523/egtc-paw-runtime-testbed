@@ -42,31 +42,29 @@ class DirectorAgentV1:
 
     def diagnose(self, objective: str, repo_policy: RepoPolicy) -> TaskDiagnosis:
         lower = objective.lower()
-        requires_code_change = any(
-            word in lower
-            for word in [
+        requires_code_change = self._objective_has_any(
+            lower,
+            [
                 "implement",
                 "design",
                 "phase b",
                 "phaseb",
                 "fix",
+                "bug",
+                "patch",
                 "add",
                 "change",
                 "modify",
                 "refactor",
                 "build",
-                "实现",
-                "设计",
-                "新增",
-                "修改",
-                "落地",
-                "中控",
-            ]
-        )
+                "swe",
+                "workbench",
+            ],
+        ) or any(word in objective for word in ["实现", "设计", "新增", "修改", "落地", "中控", "代码修复"])
         requires_tests = requires_code_change or any(
             word in lower for word in ["test", "verify", "validate", "校验", "验证", "测试"]
         )
-        task_kind = "director_planning" if "director" in lower or "中控" in objective else (
+        task_kind = "director_planning" if self._objective_has_any(lower, ["director"]) or "中控" in objective else (
             "implementation" if requires_code_change else "analysis"
         )
         risk_level = "medium" if requires_code_change else "low"
@@ -79,14 +77,21 @@ class DirectorAgentV1:
             if self.experience_library
             else []
         )
+        task_profile = self._build_task_profile(
+            objective,
+            requires_code_change=requires_code_change,
+            requires_tests=requires_tests,
+            repo_policy=repo_policy,
+        )
         return TaskDiagnosis(
             task_id=f"task-{uuid.uuid4().hex[:10]}",
             objective=objective,
-            task_kind=task_kind,
-            risk_level=risk_level,
+            task_kind=str(task_profile.get("primary_task_family") or task_kind),
+            risk_level=str(task_profile.get("risk_level") or risk_level),
             repo_touchpoints=touchpoints,
             requires_code_change=requires_code_change,
             requires_tests=requires_tests,
+            task_profile=task_profile,
             unknowns=unknowns,
             experience_matches=self._serialize_matches(matches),
         )
@@ -227,6 +232,9 @@ class DirectorAgentV1:
             repo_policy=repo_policy,
             workflow_skeleton=skeleton,
             node_instantiations=instantiations,
+            task_profile=diagnosis.task_profile,
+            work_assignment_plan=self._work_assignment_plan_from_skeleton(skeleton),
+            permission_plan=self._permission_plan_from_instantiations(instantiations),
             experience_pattern_ids=skeleton.experience_pattern_ids,
         )
 
@@ -277,7 +285,11 @@ class DirectorAgentV1:
                 "Director must decide whether each specialized or uncertain stage needs research, and must mark blocked external research when network is unavailable.",
                 "Director must feed the draft plan back into itself for structural review before final output.",
                 "Director must define a scaling policy for tasks that exceed the current corpus.",
+                "Director must treat population/BT/evolution patterns as generic adaptive scaling primitives, not a dedicated executor.",
+                "Director must record observations needed to learn whether to scale up, scale down, or route to research.",
                 "Director must compare available tooling profiles before assigning tools or MCP servers to model-agent nodes.",
+                "Director must emit task_profile, work_assignment_plan, and permission_plan as first-class planning objects.",
+                "Director must estimate agents, tokens, wall time, success probability, budget gate, stop condition, escalation condition, and cheaper alternatives before allocating agents.",
                 "Director must cite selected experience pattern ids.",
                 "Director must not request network or sandbox/permission expansion.",
                 "Director must keep verification read-only.",
@@ -412,8 +424,12 @@ class DirectorAgentV1:
                 "Director must read the skill files named by director_input.director_skill before emitting the final workflow.",
                 "Director must feed the draft plan back into itself for structural review before final output.",
                 "Director must cite selected experience pattern ids.",
+                "Director must treat population/BT/evolution patterns as generic adaptive scaling primitives, not a dedicated executor.",
+                "Director must record observations needed to learn whether to scale up, scale down, or route to research.",
                 "Director must not assume Codex CLI is the only agent runtime.",
                 "Director must prefer executor_kind=model_agent for model-backed agent units.",
+                "Director must emit task_profile, work_assignment_plan, and permission_plan as first-class planning objects.",
+                "Director must estimate agents, tokens, wall time, success probability, budget gate, stop condition, escalation condition, and cheaper alternatives before allocating agents.",
                 "Director must not request network or sandbox/permission expansion.",
                 "Verification nodes must be read-only.",
                 "Director structured output is compiled before execution.",
@@ -528,15 +544,19 @@ Planning order:
 
 director_output.json must contain exactly these top-level objects:
 - director_skill_usage
+- task_profile
 - task_diagnosis
 - workflow_skeleton
 - node_instantiations
+- work_assignment_plan
+- permission_plan
 
 Use the schema in planning_schema.md for exact field shapes. Required workflow_skeleton fields:
 - topology
 - agent_allocation
 - alternative_skeletons
 - scaling_policy
+- execution_estimate
 - deliberation_trace
 - linear_requirement_flow
 - stage_structure_decisions
@@ -559,12 +579,19 @@ draft_plan_review requirements:
 - final_structure_summary must explain why the final graph is structurally sound after review.
 
 director_skill_usage must copy hashes exactly from director_input.director_skill and include applied_required_fields containing:
-linear_requirement_flow, stage_structure_decisions, research_route_decisions, per_stage_agent_allocation, plan_derivation_trace, node_selection_principles, instantiation_principles, draft_plan_review, decision_basis.
+task_profile, work_assignment_plan, permission_plan, linear_requirement_flow, stage_structure_decisions, research_route_decisions, per_stage_agent_allocation, scaling_policy, plan_derivation_trace, node_selection_principles, instantiation_principles, draft_plan_review, decision_basis.
 
 Rules:
 - Use only pattern ids present in director_input.experience_candidates.
 - Do not assume a fixed number of agents; derive counts from complexity, uncertainty, dependency breadth, validation burden, risk, and evidence.
 - The current task may need 1 agent, 4 agents, dozens of agents, or a staged plan that can grow toward hundreds; include scale triggers.
+- For complex verifiable tasks, choose an adaptive scale level rather than a special-case executor; population, pairwise ranking, mutation, and large BT-style runs are generic primitives.
+- scaling_policy must include policy_id/current_scale_level/scale_level_name/scale_down_triggers/observations_to_record/budget_gate/decision_basis when applicable.
+- task_diagnosis.task_profile and top-level task_profile must classify task family, verification, knowledge sources, failure modes, and budget.
+- workflow_skeleton.execution_estimate must include estimated_agents, estimated_tokens, estimated_wall_time_sec, expected_success_probability, budget_gate, stop_condition, escalation_condition, and cheaper_alternative.
+- work_assignment_plan must cover every final node with schemas, ownership, parallel safety, failure takeover, selection basis, and capability needs.
+- permission_plan must cover every node instantiation with permission_intents, minimum_boundary, why_needed, fallback_if_denied, and secret_access=false.
+- observations_to_record must include candidate_count, comparison_count, validator_pass_rate, retry_count, replan_count, and next_scaling_hint.
 - Every planning record, node_selection_principles object, instantiation_principles object, and draft_plan_review structure finding must include decision_basis.
 - The sum of per_stage_agent_allocation.agent_count values must equal agent_allocation.total_agents and the final skeleton node count.
 - Every final node id must appear in plan_derivation_trace.
@@ -602,6 +629,9 @@ Rules:
 - Do not assume a fixed number of agents; derive counts from complexity, uncertainty, dependency breadth, validation burden, risk, and evidence.
 - Do not assume Codex CLI is the only agent runtime.
 - Prefer executor_kind="model_agent" for model-backed agents and include model_provider/model/model_config when concrete provider information is known.
+- For complex verifiable tasks, choose an adaptive scale level rather than a special-case executor; population, pairwise ranking, mutation, and large BT-style runs are generic primitives.
+- scaling_policy must include policy_id/current_scale_level/scale_level_name/scale_down_triggers/observations_to_record/budget_gate/decision_basis when applicable.
+- observations_to_record must include candidate_count, comparison_count, validator_pass_rate, retry_count, replan_count, and next_scaling_hint.
 - Use subprocess only for deterministic local commands, and codex_cli only when the plan explicitly needs Codex compatibility.
 - Every planning record, node_selection_principles object, instantiation_principles object, and draft_plan_review structure finding must include decision_basis.
 - The sum of per_stage_agent_allocation.agent_count values must equal agent_allocation.total_agents and the final skeleton node count.
@@ -611,15 +641,19 @@ Rules:
 
 director_output.json must contain exactly these top-level objects:
 - director_skill_usage
+- task_profile
 - task_diagnosis
 - workflow_skeleton
 - node_instantiations
+- work_assignment_plan
+- permission_plan
 
 Use the schema in planning_schema.md for exact field shapes. Required workflow_skeleton fields:
 - topology
 - agent_allocation
 - alternative_skeletons
 - scaling_policy
+- execution_estimate
 - deliberation_trace
 - linear_requirement_flow
 - stage_structure_decisions
@@ -670,10 +704,14 @@ Output strict JSON:
     "schema_sha256": "copy from director_input.director_skill.schema_sha256",
     "loaded": true,
     "applied_required_fields": [
+      "task_profile",
+      "work_assignment_plan",
+      "permission_plan",
       "linear_requirement_flow",
       "stage_structure_decisions",
       "research_route_decisions",
       "per_stage_agent_allocation",
+      "scaling_policy",
       "plan_derivation_trace",
       "node_selection_principles",
       "instantiation_principles",
@@ -686,6 +724,21 @@ Output strict JSON:
     "risk_level": "low" | "medium" | "high",
     "requires_code_change": true | false,
     "requires_tests": true | false,
+    "task_profile": {
+      "task_family": "retrieval | finance_calculation | planning | code_repair | terminal_execution | contest_reasoning | implementation | analysis",
+      "verification_method": "answer_match | unit_tests | container_tests | external_fact_evidence | human_judged | judge",
+      "knowledge_sources": ["prompt", "repo", "local_dataset", "network", "tool_execution"],
+      "predicted_failure_modes": ["ambiguity", "missing_dependency", "permission_gap", "long_chain_error", "arithmetic_error", "environment_error"],
+      "estimated_difficulty": "low | medium | high | extreme",
+      "estimated_agents": 1,
+      "estimated_tokens": 4000,
+      "estimated_wall_time_sec": 300,
+      "multi_candidate_worthwhile": false,
+      "budget_gate": {"max_agents": 1, "max_tokens": 4000, "max_wall_time_sec": 300},
+      "stop_condition": "what evidence stops execution",
+      "escalation_condition": "what evidence requires Director replan or human/permission review",
+      "cheaper_alternative": "single cheap path when sufficient"
+    },
     "repo_touchpoints": ["."],
     "unknowns": [],
     "experience_matches": [
@@ -720,10 +773,27 @@ Output strict JSON:
       }
     ],
     "scaling_policy": {
+      "policy_id": "experience pattern id or local policy id",
+      "current_scale_level": 0,
+      "requested_scale_level": 0,
+      "scale_level_name": "single_candidate_baseline | small_pool_2_to_3_candidates_all_pairs | medium_pool_5_to_8_candidates_pairwise_K2_or_K3 | evolution_loop_with_elites_and_mutation | large_population_BT_style_n12_to_n20_K4_T2_to_T3_M8_to_M10",
       "scale_triggers": ["signals that require more agents/nodes"],
+      "scale_down_triggers": ["signals that require fewer agents or research before more population"],
       "max_planned_agents_for_current_task": 0,
       "expansion_strategy": ["how to add more explorers/workers/verifiers/overlookers if complexity grows"],
-      "requires_replan_when": ["conditions that force Director replan"]
+      "requires_replan_when": ["conditions that force Director replan"],
+      "observations_to_record": ["candidate_count", "comparison_count", "validator_pass_rate", "retry_count", "replan_count", "next_scaling_hint"],
+      "budget_gate": {"max_candidate_count": 0, "max_comparison_count": 0, "max_mutation_rounds": 0, "max_planned_agents": 0},
+      "decision_basis": {
+        "basis_id": "basis-scaling-policy",
+        "source_refs": ["objective", "experience:pattern-id"],
+        "matched_signals": ["complexity, verifiability, uncertainty, budget"],
+        "assumptions": ["why this scale level is enough now"],
+        "invalidation_signals": ["what evidence requires scale up, scale down, or research routing"],
+        "confidence": "low | medium | high",
+        "correction_target": "workflow_skeleton.scaling_policy",
+        "correction_action": "scale up, scale down, add comparison/mutation, or route to research/specialist before recompiling"
+      }
     },
     "deliberation_trace": [
       "compare evidence and task signals, then explain a planning judgment",
@@ -980,6 +1050,8 @@ Rules:
 - If the skill files cannot be read, do not invent a plan; write director_skill_usage.loaded=false and explain the missing file in task_diagnosis.unknowns.
 - Do not assume a fixed number of agents. Derive total_agents from task complexity, uncertainty, dependency breadth, validation surface, risk, and available evidence.
 - The current task may need 1 agent, 4 agents, dozens of agents, or a staged plan that can grow toward hundreds. If the full scale is not needed now, explain the scale triggers.
+- For complex verifiable tasks, choose an adaptive scale level rather than a special-case executor. Treat population sampling, pairwise ranking, mutation, and large BT-style runs as generic primitives that can be expanded by evidence.
+- scaling_policy must include enough observations for self-learning: candidate_count, comparison_count, validator_pass_rate, retry_count, replan_count, token/latency when available, and next_scaling_hint.
 - Compare at least three candidate skeletons, including a small conservative plan, a medium plan, and a larger scalable plan.
 - Pick the smallest plan that has enough coverage, but explicitly describe when it should be expanded.
 - Every final node must be traceable to a linear_requirement_flow stage through per_stage_agent_allocation and plan_derivation_trace.
@@ -1041,6 +1113,20 @@ Rules:
             ],
             requires_code_change=bool(raw_diagnosis.get("requires_code_change", True)),
             requires_tests=bool(raw_diagnosis.get("requires_tests", True)),
+            task_profile=(
+                raw_diagnosis.get("task_profile")
+                if isinstance(raw_diagnosis.get("task_profile"), dict)
+                else (
+                    output.get("task_profile")
+                    if isinstance(output.get("task_profile"), dict)
+                    else self._build_task_profile(
+                        objective,
+                        requires_code_change=bool(raw_diagnosis.get("requires_code_change", True)),
+                        requires_tests=bool(raw_diagnosis.get("requires_tests", True)),
+                        repo_policy=repo_policy,
+                    )
+                )
+            ),
             unknowns=[str(item) for item in raw_diagnosis.get("unknowns", [])],
             experience_matches=(
                 raw_diagnosis.get("experience_matches")
@@ -1096,6 +1182,11 @@ Rules:
             scaling_policy=(
                 raw_skeleton.get("scaling_policy")
                 if isinstance(raw_skeleton.get("scaling_policy"), dict)
+                else {}
+            ),
+            execution_estimate=(
+                raw_skeleton.get("execution_estimate")
+                if isinstance(raw_skeleton.get("execution_estimate"), dict)
                 else {}
             ),
             deliberation_trace=[
@@ -1206,6 +1297,21 @@ Rules:
             repo_policy=repo_policy,
             workflow_skeleton=skeleton,
             node_instantiations=instantiations,
+            task_profile=(
+                output.get("task_profile")
+                if isinstance(output.get("task_profile"), dict)
+                else diagnosis.task_profile
+            ),
+            work_assignment_plan=(
+                output.get("work_assignment_plan")
+                if isinstance(output.get("work_assignment_plan"), list)
+                else self._work_assignment_plan_from_skeleton(skeleton)
+            ),
+            permission_plan=(
+                output.get("permission_plan")
+                if isinstance(output.get("permission_plan"), list)
+                else self._permission_plan_from_instantiations(instantiations)
+            ),
             experience_pattern_ids=skeleton.experience_pattern_ids,
             director_mode="codex",
             director_session_id=director_session_id,
@@ -1513,6 +1619,233 @@ Rules:
     def _guess_touchpoints(self, objective: str, repo_policy: RepoPolicy) -> list[str]:
         mentioned = re.findall(r"[\w./-]+\\.py|[\w./-]+\\.md|[\w./-]+\\.toml", objective)
         return mentioned or ["."]
+
+    def _objective_has_any(self, lower_objective: str, terms: list[str]) -> bool:
+        for term in terms:
+            escaped = re.escape(term.lower())
+            if " " in term or "-" in term:
+                if term.lower() in lower_objective:
+                    return True
+                continue
+            if re.search(rf"(?<![a-z0-9_]){escaped}(?![a-z0-9_])", lower_objective):
+                return True
+        return False
+
+    def _build_task_profile(
+        self,
+        objective: str,
+        *,
+        requires_code_change: bool,
+        requires_tests: bool,
+        repo_policy: RepoPolicy,
+    ) -> dict[str, Any]:
+        lower = objective.lower()
+        families: list[str] = []
+        if self._objective_has_any(lower, ["browsecomp", "browse", "source", "web"]) or any(term in objective for term in ["检索", "搜索"]):
+            families.append("retrieval")
+        if self._objective_has_any(lower, ["finance", "financial", "calculator"]) or any(term in objective for term in ["财务", "收益", "估值"]):
+            families.append("finance_calculation")
+        if self._objective_has_any(lower, ["plancraft", "planning"]) or any(term in objective for term in ["计划", "状态转移"]):
+            families.append("planning_state_transition")
+        if self._objective_has_any(lower, ["swe", "workbench", "patch", "bug", "fix"]) or "代码修复" in objective:
+            families.append("code_repair")
+        if self._objective_has_any(lower, ["terminal-bench", "terminal", "shell", "container"]) or any(term in objective for term in ["终端", "容器"]):
+            families.append("terminal_execution")
+        if self._objective_has_any(lower, ["opendeepthink", "codeforces", "judge"]) or any(term in objective for term in ["竞赛", "推理", "难题"]):
+            families.append("contest_reasoning")
+        if requires_code_change and "code_repair" not in families:
+            families.append("code_repair")
+        if not families:
+            families.append("analysis")
+
+        verification = ["human_judgment"]
+        if any(family in families for family in ["code_repair"]):
+            verification = ["unit_tests", "repo_tests", "patch_review"]
+        elif "terminal_execution" in families:
+            verification = ["shell_exit_status", "container_test", "checkpoint_artifact"]
+        elif "retrieval" in families:
+            verification = ["external_fact_evidence", "source_citation"]
+        elif "finance_calculation" in families:
+            verification = ["formula_check", "answer_match", "source_citation"]
+        elif "planning_state_transition" in families:
+            verification = ["state_transition_check", "ambiguity_review"]
+        elif "contest_reasoning" in families:
+            verification = ["judge", "sample_tests", "pairwise_ranking"]
+        elif requires_tests:
+            verification = ["unit_tests"]
+
+        knowledge_sources = ["prompt"]
+        if requires_code_change or any(family in families for family in ["code_repair", "terminal_execution"]):
+            knowledge_sources.append("repo")
+        if any(family in families for family in ["code_repair", "terminal_execution", "contest_reasoning"]):
+            knowledge_sources.append("tool_execution")
+        if any(family in families for family in ["retrieval", "finance_calculation"]):
+            knowledge_sources.append("network_or_local_corpus")
+        if self._objective_has_any(lower, ["dataset", "swe-bench", "modelscope", "benchmark"]):
+            knowledge_sources.append("local_dataset")
+
+        failure_modes = ["ambiguity", "long_chain_error"]
+        if requires_code_change:
+            failure_modes += ["missing_dependency", "patch_risk", "test_environment_error"]
+        if "terminal_execution" in families:
+            failure_modes += ["permission_insufficient", "environment_error", "checkpoint_drift"]
+        if any(family in families for family in ["retrieval", "finance_calculation"]):
+            failure_modes += ["external_fact_stale", "source_mismatch"]
+        if "finance_calculation" in families:
+            failure_modes.append("arithmetic_error")
+        if "planning_state_transition" in families:
+            failure_modes.append("state_ambiguity")
+        if "contest_reasoning" in families:
+            failure_modes += ["candidate_quality_low", "judge_noise"]
+
+        base_agents = 1
+        if "code_repair" in families:
+            base_agents = 4
+        elif "terminal_execution" in families:
+            base_agents = 3
+        elif "contest_reasoning" in families:
+            base_agents = 3
+        elif any(family in families for family in ["retrieval", "finance_calculation", "planning_state_transition"]):
+            base_agents = 2
+
+        high_uncertainty = self._objective_has_any(lower, ["complex", "hard", "difficult"]) or any(term in objective for term in ["复杂", "困难", "难"])
+        estimated_agents = base_agents + (2 if high_uncertainty and "contest_reasoning" in families else 0)
+        estimated_tokens = 6_000 + estimated_agents * 3_000
+        estimated_wall_time = 120 + estimated_agents * 90
+
+        return {
+            "primary_task_family": families[0],
+            "task_families": families,
+            "verification_methods": verification,
+            "knowledge_sources": knowledge_sources,
+            "predicted_failure_modes": sorted(set(failure_modes)),
+            "risk_level": "high" if high_uncertainty or "terminal_execution" in families else ("medium" if requires_code_change else "low"),
+            "estimated_difficulty": "high" if high_uncertainty else ("medium" if requires_code_change or requires_tests else "low"),
+            "estimated_budget": {
+                "estimated_agents": estimated_agents,
+                "estimated_tokens": estimated_tokens,
+                "estimated_wall_time_sec": estimated_wall_time,
+                "worth_multi_candidate": bool("contest_reasoning" in families or high_uncertainty),
+            },
+            "budget_gate": {
+                "max_agents_before_replan": max(estimated_agents, 1),
+                "max_tokens_before_replan": estimated_tokens * 2,
+                "max_wall_time_sec_before_replan": estimated_wall_time * 2,
+            },
+            "stop_condition": "Stop when required verification evidence passes or Overlooker rejects with unrecoverable ambiguity.",
+            "escalation_condition": "Escalate when required knowledge source or permission is unavailable, verifier reports ambiguity, or retries repeat the same failure.",
+            "cheaper_alternative": "Use a single-agent cheap path when all required knowledge is in prompt and verification is direct.",
+        }
+
+    def _work_assignment_plan_from_skeleton(
+        self,
+        skeleton: WorkflowSkeleton,
+    ) -> list[dict[str, Any]]:
+        assignments: list[dict[str, Any]] = []
+        allocation_by_node: dict[str, dict[str, Any]] = {}
+        for allocation in skeleton.per_stage_agent_allocation:
+            if not isinstance(allocation, dict):
+                continue
+            for agent in allocation.get("agents", []):
+                if not isinstance(agent, dict):
+                    continue
+                target = str(agent.get("handoff_target") or "")
+                if target:
+                    allocation_by_node[target] = {
+                        "stage_id": allocation.get("stage_id"),
+                        "agent_record": agent,
+                        "count_reason": allocation.get("count_reason"),
+                    }
+        for node in skeleton.nodes:
+            allocation = allocation_by_node.get(node.node_id, {})
+            agent = allocation.get("agent_record", {})
+            assignments.append(
+                {
+                    "node_id": node.node_id,
+                    "role": node.role,
+                    "stage_id": allocation.get("stage_id")
+                    or node.node_selection_principles.get("stage_id", node.phase),
+                    "agent_type": self._agent_type_for_role(node.role),
+                    "input_schema": {
+                        "required": ["objective", "upstream_artifacts", "permission_plan"],
+                        "upstream_nodes": node.depends_on,
+                    },
+                    "output_schema": {
+                        "required": node.expected_outputs or ["agent_report"],
+                    },
+                    "ownership_boundary": agent.get(
+                        "ownership_boundary",
+                        "Own only the outputs declared by this node.",
+                    ),
+                    "parallel_safe": not bool(node.depends_on),
+                    "parallel_safety_reason": (
+                        "No predecessor and no write authority."
+                        if not node.depends_on
+                        else "Depends on upstream artifacts before execution."
+                    ),
+                    "failure_takeover": "Overlooker may request retry, fork from accepted upstream state, or Director replan.",
+                    "selection_basis": agent.get(
+                        "task",
+                        f"{node.role} selected for {node.phase}.",
+                    ),
+                    "capability_needs": self._capability_needs_for_phase(node.phase, node.role),
+                }
+            )
+        return assignments
+
+    def _permission_plan_from_instantiations(
+        self,
+        instantiations: list[NodeInstantiation],
+    ) -> list[dict[str, Any]]:
+        plans: list[dict[str, Any]] = []
+        for inst in instantiations:
+            profile = inst.permission_grounding.sandbox_profile
+            intents = ["read_repo"]
+            if profile.allowed_write_paths:
+                intents.append("write_patch")
+            if profile.allowed_commands:
+                intents.append("run_tests" if inst.node.phase == "verification" else "run_shell")
+            if profile.network != "none":
+                intents.append("network_search")
+            plans.append(
+                {
+                    "node_id": inst.node.node_id,
+                    "skeleton_node_id": inst.skeleton_node_id,
+                    "permission_intents": intents,
+                    "minimum_boundary": {
+                        "read_paths": profile.allowed_read_paths,
+                        "write_paths": profile.allowed_write_paths,
+                        "allowed_commands": profile.allowed_commands,
+                        "network": profile.network,
+                        "secret_access": False,
+                    },
+                    "why_needed": profile.justification,
+                    "fallback_if_denied": "Return to Overlooker permission review and request Director replan with a lower-permission route.",
+                }
+            )
+        return plans
+
+    def _agent_type_for_role(self, role: str) -> str:
+        if role in {"verifier", "reviewer"}:
+            return "verification"
+        if role in {"explorer", "researcher"}:
+            return "tool_or_expert"
+        if role in {"aggregator", "judge"}:
+            return "candidate_selection"
+        if role in {"worker", "implementer"}:
+            return "generalist"
+        return "specialist"
+
+    def _capability_needs_for_phase(self, phase: str, role: str) -> list[str]:
+        text = f"{phase} {role}".lower()
+        needs = ["repo_read"]
+        if any(term in text for term in ["implement", "worker", "write"]):
+            needs.append("write_patch")
+        if any(term in text for term in ["verify", "test"]):
+            needs.append("test")
+        if any(term in text for term in ["terminal", "shell"]):
+            needs.append("terminal_shell")
+        return needs
 
     def _command_for(self, phase: str, repo_policy: RepoPolicy) -> list[str]:
         if phase == "verification":

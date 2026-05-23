@@ -164,6 +164,10 @@ def main() -> int:
     print(json.dumps(structured(compiled), indent=2, sort_keys=True))
     expected = {
         "director_missing_skill_usage",
+        "director_missing_execution_estimate",
+        "director_missing_task_profile",
+        "director_missing_work_assignment_plan",
+        "director_missing_permission_plan",
         "director_missing_decision_basis",
         "director_missing_draft_plan_review",
         "director_node_missing_selection_principles",

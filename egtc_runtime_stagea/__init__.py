@@ -2,7 +2,7 @@
 
 from .agent_wrapper import AgentExecWrapper
 from .experience import ExperienceLibrary
-from .graph_runtime import GraphRuntime
+from .graph_runtime import GraphRuntime, graph_spec_from_blueprint
 from .model_agent import ModelAgentRegistry
 from .runtime import StageARuntime
 from .tool_runtime import ModelAgentToolRuntime
@@ -12,6 +12,7 @@ __all__ = [
     "AgentExecWrapper",
     "ExperienceLibrary",
     "GraphRuntime",
+    "graph_spec_from_blueprint",
     "ModelAgentRegistry",
     "ModelAgentToolRuntime",
     "StageARuntime",
