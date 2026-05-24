@@ -27,6 +27,8 @@ Use this skill before emitting a workflow plan. The Director must first build pl
    - Explain why this structure fits the stage.
    - Name anti-signals that would make the structure wrong.
    - Include `decision_basis` for the selected structure and any rejected structure that materially influenced the choice.
+   - Do not select a workflow by applying a fixed task-family template. Task family is evidence for deliberation, not a rule that determines node names, agent counts, or topology.
+   - When a familiar orchestration pattern appears useful, compare it against at least one cheaper and one broader alternative before selecting it.
 
 4. Decide whether research is needed.
    - Use existing experience candidates first.
@@ -66,6 +68,8 @@ Use this skill before emitting a workflow plan. The Director must first build pl
 10. Compare complete candidate plans.
    - Compare at least three complete plans: small, selected, and larger-scalable.
    - Each candidate must include stage mapping, estimated agents, strengths, weaknesses, and rejection reason if not selected.
+   - The selected candidate must explicitly cover every final workflow node in its stage mapping.
+   - The selected candidate must justify why its node count, agent count, and permission mix are sufficient for this specific task instance.
 
 11. Feed the draft plan back into the Director for structural self-review.
    - Before final output, construct a `draft_plan` containing the selected linear stages, structure decisions, agent allocation, draft final nodes, draft edges, draft node instantiations, and selected experience pattern ids.
@@ -130,4 +134,5 @@ Reject your own plan and revise before output if:
 - A node exists without a clear role, dependency, parallelism, evidence, and correction principle.
 - A `decision_basis` has no correction target for future replanning.
 - The selected plan is just the first plan considered.
+- The selected plan follows a fixed task-family recipe without comparing alternatives and grounding its permissions in capability needs.
 - The plan scales by adding agents without ownership boundaries.

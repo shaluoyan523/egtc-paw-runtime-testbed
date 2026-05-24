@@ -114,7 +114,7 @@ class WorkflowCompiler:
             findings.extend(self._check_task_profile(blueprint))
             findings.extend(self._check_work_assignment_plan(blueprint))
             findings.extend(self._check_permission_plan(blueprint))
-            findings.extend(self._check_task_family_alignment(blueprint))
+            findings.extend(self._check_director_choice_grounding(blueprint))
 
         accepted = not any(finding.severity == "error" for finding in findings)
         return CompiledWorkflow(
@@ -566,156 +566,156 @@ class WorkflowCompiler:
                 )
         return findings
 
-    def _check_task_family_alignment(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
+    def _check_director_choice_grounding(self, blueprint: WorkflowBlueprint) -> list[CompilerFinding]:
         profile = blueprint.task_profile or blueprint.task_diagnosis.task_profile
         if not isinstance(profile, dict):
             return []
-        family = str(profile.get("primary_task_family") or "")
-        if not family:
-            return []
-
-        skeleton_node_ids = {
-            node.node_id.lower()
-            for node in blueprint.workflow_skeleton.nodes
-        }
-        skeleton_roles = {
-            node.role.lower()
-            for node in blueprint.workflow_skeleton.nodes
-        }
-        skeleton_phases = {
-            node.phase.lower()
-            for node in blueprint.workflow_skeleton.nodes
-        }
-        permission_intents = {
-            str(intent)
-            for item in blueprint.permission_plan
-            if isinstance(item, dict)
-            for intent in item.get("permission_intents", [])
-        }
-
         findings: list[CompilerFinding] = []
-        if family in {
-            "retrieval",
-            "finance_calculation",
-            "planning_state_transition",
-            "terminal_execution",
-            "contest_reasoning",
-            "analysis",
-        }:
-            patch_like = {
-                node_id
-                for node_id in skeleton_node_ids
-                if node_id in {"implement", "explore-tests", "explore-context"}
-            }
-            if patch_like:
-                findings.append(
-                    CompilerFinding(
-                        "error",
-                        "director_task_family_uses_code_repair_template",
-                        (
-                            f"task_profile.primary_task_family={family} must not use the "
-                            f"code-repair fallback nodes: {sorted(patch_like)}."
-                        ),
-                    )
-                )
-            if "write_patch" in permission_intents:
-                findings.append(
-                    CompilerFinding(
-                        "error",
-                        "director_task_family_unexpected_write_patch",
-                        f"task_profile.primary_task_family={family} must not request write_patch by default.",
-                    )
-                )
 
-        required_signals = {
-            "retrieval": [
-                {"node_ids": {"research-sources", "source-verify"}},
-                {"roles": {"researcher", "verifier"}},
-                {"intents": {"dataset_read"}},
-            ],
-            "finance_calculation": [
-                {"node_ids": {"calculate-answer", "formula-verify"}},
-                {"roles": {"calculator", "verifier"}},
-                {"intents": {"finance_calculator"}},
-            ],
-            "planning_state_transition": [
-                {"node_ids": {"ambiguity-check", "transition-verify"}},
-                {"roles": {"ambiguity_detector", "planner", "verifier"}},
-            ],
-            "terminal_execution": [
-                {"node_ids": {"plan-terminal-actions", "execute-checkpoint", "verify-checkpoint"}},
-                {"roles": {"tool_planner", "executor", "verifier"}},
-                {"intents": {"run_shell", "container_exec"}},
-            ],
-            "contest_reasoning": [
-                {"node_ids": {"candidate-generate", "candidate-judge", "final-verify"}},
-                {"roles": {"proposer", "judge", "verifier"}},
-            ],
-            "analysis": [
-                {"node_ids": {"analyze-task", "verify-answer-plan"}},
-            ],
-            "code_repair": [
-                {"node_ids": {"implement", "verify"}},
-                {"intents": {"write_patch"}},
-            ],
+        primary = str(profile.get("primary_task_family") or "")
+        families = profile.get("task_families")
+        if isinstance(families, list) and primary and primary not in {str(item) for item in families}:
+            findings.append(
+                CompilerFinding(
+                    "error",
+                    "director_task_profile_primary_family_not_listed",
+                    "task_profile.primary_task_family must also appear in task_profile.task_families.",
+                )
+            )
+
+        skeleton_ids = {node.node_id for node in blueprint.workflow_skeleton.nodes}
+        selected_alternative = next(
+            (
+                alternative
+                for alternative in blueprint.workflow_skeleton.alternative_skeletons
+                if isinstance(alternative, dict) and bool(alternative.get("selected"))
+            ),
+            None,
+        )
+        if isinstance(selected_alternative, dict):
+            mapping = selected_alternative.get("stage_mapping")
+            if isinstance(mapping, dict) and mapping:
+                mapped_ids = {
+                    str(node_id)
+                    for node_ids in mapping.values()
+                    if isinstance(node_ids, list)
+                    for node_id in node_ids
+                    if str(node_id) in skeleton_ids
+                }
+                missing = sorted(skeleton_ids - mapped_ids)
+                if missing:
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_selected_alternative_missing_nodes",
+                            f"selected alternative stage_mapping must cover final skeleton nodes: {missing}",
+                        )
+                    )
+
+        assignment_by_node = {
+            str(item.get("node_id")): item
+            for item in blueprint.work_assignment_plan
+            if isinstance(item, dict) and item.get("node_id")
         }
-        for index, signal in enumerate(required_signals.get(family, [])):
-            required_nodes = signal.get("node_ids")
-            if required_nodes and not required_nodes.issubset(skeleton_node_ids):
-                findings.append(
-                    CompilerFinding(
-                        "error",
-                        "director_task_family_missing_nodes",
-                        (
-                            f"task_profile.primary_task_family={family} is missing required "
-                            f"node ids: {sorted(required_nodes - skeleton_node_ids)}."
-                        ),
-                    )
+        node_by_id = {node.node_id: node for node in blueprint.workflow_skeleton.nodes}
+        inst_by_node_id = {
+            inst.node.node_id: inst
+            for inst in blueprint.node_instantiations
+        }
+        risky_intents = {
+            "write_patch",
+            "run_tests",
+            "run_shell",
+            "network_search",
+            "dataset_read",
+            "container_exec",
+            "finance_calculator",
+            "browser",
+        }
+        capability_aliases = {
+            "write_patch": {"write_patch", "repo_write", "patch", "implementation", "edit"},
+            "run_tests": {"run_tests", "test", "tests", "unit_tests", "repo_tests", "validation"},
+            "run_shell": {"run_shell", "shell", "terminal_shell", "terminal", "tool_execution", "execution"},
+            "container_exec": {"container_exec", "container", "terminal_shell", "checkpoint", "execution"},
+            "network_search": {"network_search", "browser", "external_research", "source_evidence", "source_verification", "web"},
+            "dataset_read": {"dataset_read", "local_dataset", "source_evidence", "source_verification", "evidence", "corpus"},
+            "finance_calculator": {"finance_calculator", "calculator", "formula", "formula_check", "calculation"},
+            "browser": {"browser", "source_evidence", "source_verification", "external_research", "web"},
+        }
+        profile_terms = {
+            str(item).lower()
+            for key in ["knowledge_sources", "verification_methods", "predicted_failure_modes", "task_families"]
+            for item in (profile.get(key) if isinstance(profile.get(key), list) else [])
+        }
+        for item in blueprint.permission_plan:
+            if not isinstance(item, dict):
+                continue
+            node_id = str(item.get("node_id") or "")
+            skeleton_node_id = str(item.get("skeleton_node_id") or "")
+            intents = [str(intent) for intent in item.get("permission_intents", [])]
+            assignment = assignment_by_node.get(skeleton_node_id, {})
+            skeleton_node = node_by_id.get(skeleton_node_id)
+            instantiation = inst_by_node_id.get(node_id)
+            capability_terms = {
+                str(value).lower()
+                for value in assignment.get("capability_needs", [])
+                if isinstance(value, str)
+            }
+            descriptive_terms = " ".join(
+                str(value).lower()
+                for value in [
+                    assignment.get("role"),
+                    assignment.get("agent_type"),
+                    assignment.get("selection_basis"),
+                    assignment.get("ownership_boundary"),
+                    item.get("why_needed"),
+                    skeleton_node.role if skeleton_node else "",
+                    skeleton_node.phase if skeleton_node else "",
+                    skeleton_node.goal if skeleton_node else "",
+                    instantiation.node.goal if instantiation else "",
+                    instantiation.node.prompt if instantiation else "",
+                ]
+            )
+            for intent in intents:
+                if intent not in risky_intents:
+                    continue
+                aliases = capability_aliases.get(intent, {intent})
+                grounded_by_assignment = bool(capability_terms.intersection(aliases)) or any(
+                    alias in descriptive_terms for alias in aliases
                 )
-            required_roles = signal.get("roles")
-            if required_roles and not required_roles.issubset(skeleton_roles):
-                findings.append(
-                    CompilerFinding(
-                        "error",
-                        "director_task_family_missing_roles",
-                        (
-                            f"task_profile.primary_task_family={family} is missing required "
-                            f"roles: {sorted(required_roles - skeleton_roles)}."
-                        ),
+                grounded_by_profile = bool(profile_terms.intersection(aliases))
+                if intent == "write_patch" and blueprint.task_diagnosis.requires_code_change:
+                    grounded_by_profile = True
+                if intent == "run_tests" and blueprint.task_diagnosis.requires_tests:
+                    grounded_by_profile = True
+                if not grounded_by_assignment and not grounded_by_profile:
+                    findings.append(
+                        CompilerFinding(
+                            "error",
+                            "director_permission_intent_not_grounded_by_assignment",
+                            (
+                                f"permission intent {intent!r} must be justified by the node's "
+                                "capability_needs, selection basis, or task profile; compiler must not infer "
+                                "a task-family template on Director's behalf."
+                            ),
+                            node_id or None,
+                        )
                     )
-                )
-            required_phases = signal.get("phases")
-            if required_phases and not required_phases.issubset(skeleton_phases):
-                findings.append(
-                    CompilerFinding(
-                        "error",
-                        "director_task_family_missing_phases",
-                        (
-                            f"task_profile.primary_task_family={family} is missing required "
-                            f"phases: {sorted(required_phases - skeleton_phases)}."
-                        ),
+
+                why_needed = str(item.get("why_needed") or "").strip().lower()
+                if intent != "dataset_read" and why_needed in {
+                    "negative demo.",
+                    "permission is grounded by repo policy.",
+                    "model-agent node is grounded by repo policy and task-profile permission intent.",
+                }:
+                    findings.append(
+                        CompilerFinding(
+                            "warning",
+                            "director_permission_intent_generic_rationale",
+                            f"permission intent {intent!r} has a generic why_needed; Director should explain the concrete task signal.",
+                            node_id or None,
+                        )
                     )
-                )
-            required_intents = signal.get("intents")
-            if required_intents and not required_intents.issubset(permission_intents):
-                findings.append(
-                    CompilerFinding(
-                        "error",
-                        "director_task_family_missing_permission_intents",
-                        (
-                            f"task_profile.primary_task_family={family} is missing required "
-                            f"permission intents: {sorted(required_intents - permission_intents)}."
-                        ),
-                    )
-                )
-            if not signal:
-                findings.append(
-                    CompilerFinding(
-                        "error",
-                        "director_task_family_invalid_alignment_signal",
-                        f"Internal compiler alignment rule {index} for {family} is empty.",
-                    )
-                )
         return findings
 
     def _check_execution_estimate(self, estimate: dict[str, Any]) -> list[CompilerFinding]:
