@@ -32,8 +32,10 @@ def build_deterministic_model_director_output(
     ] or pattern_refs[:1]
 
     family = _selected_primary_family(objective)
+    task_profile_seed = _task_profile(objective, 1)
     template = _workflow_template(
         family=family,
+        task_profile=task_profile_seed,
         repo_policy=repo_policy,
         selected_pattern_ids=selected_pattern_ids,
         pattern_refs=pattern_refs,
@@ -317,603 +319,318 @@ def _task_profile(objective: str, estimated_agents: int) -> dict[str, Any]:
 def _workflow_template(
     *,
     family: str,
+    task_profile: dict[str, Any],
     repo_policy: RepoPolicy,
     selected_pattern_ids: list[str],
     pattern_refs: list[str],
     scaling_pattern_refs: list[str],
 ) -> dict[str, Any]:
     del selected_pattern_ids, scaling_pattern_refs
-    if family == "retrieval":
-        node_specs = [
+    primary = str(task_profile.get("primary_task_family") or family or "analysis")
+    verification = {
+        str(item)
+        for item in task_profile.get("verification_methods", [])
+        if isinstance(item, str)
+    }
+    sources = {
+        str(item)
+        for item in task_profile.get("knowledge_sources", [])
+        if isinstance(item, str)
+    }
+    budget = task_profile.get("estimated_budget", {})
+    worth_multi_candidate = bool(budget.get("worth_multi_candidate")) if isinstance(budget, dict) else False
+
+    requires_code_change = primary == "code_repair"
+    requires_tests = bool(verification.intersection({"unit_tests", "repo_tests", "patch_review"}))
+    needs_source_evidence = bool(
+        sources.intersection({"network_or_local_corpus", "local_dataset"})
+        or verification.intersection({"external_fact_evidence", "source_citation"})
+    )
+    needs_calculation = bool(verification.intersection({"formula_check", "answer_match"}))
+    needs_state_reasoning = bool(verification.intersection({"state_transition_check", "ambiguity_review"}))
+    needs_tool_execution = bool(
+        sources.intersection({"tool_execution"})
+        or verification.intersection({"shell_exit_status", "container_test", "checkpoint_artifact", "sample_tests", "judge"})
+    )
+    needs_candidates = worth_multi_candidate or bool(verification.intersection({"judge", "pairwise_ranking"}))
+
+    node_specs: list[dict[str, Any]] = []
+
+    def add_node(
+        node_id: str,
+        phase: str,
+        role: str,
+        goal: str,
+        depends_on: list[str],
+        expected_outputs: list[str],
+        reason: str,
+        prompt: str,
+        permission_intents: list[str],
+        required_evidence: list[str],
+        capability_needs: list[str],
+        ownership_boundary: str,
+        *,
+        write_paths: list[str] | None = None,
+        allowed_commands: list[list[str]] | None = None,
+        network: str = "none",
+        permission_justification: str | None = None,
+    ) -> None:
+        stage_id = f"stage-{len(node_specs) + 1}"
+        refs = ["objective", "task_profile", *pattern_refs[:2]]
+        if depends_on:
+            refs = [*(f"workflow_skeleton.nodes[{item}]" for item in depends_on), *pattern_refs[:2]]
+        node_specs.append(
             _node_spec(
-                "research-sources",
-                "research",
-                "researcher",
-                "Collect local-corpus or approved browser evidence and record source quality.",
-                [],
-                ["source_evidence_set", "query_log"],
-                "stage-1",
-                "Evidence collection is the primary uncertainty, not code modification.",
-                "No predecessor is needed because this starts from the prompt and available corpus.",
-                "Runs alone because downstream synthesis needs one coherent evidence ledger.",
-                "Search available local corpus and, only if already permitted, browser sources. Do not edit files.",
-                ["read_repo", "dataset_read", "browser"] + (["network_search"] if repo_policy.network_allowed_by_default else []),
-                ["source_evidence_set", "query_log", "resource_report"],
-                ["objective", "available_tooling_profiles", *pattern_refs[:2]],
-                capability_needs=["dataset_read", "browser", "source_evidence"],
-                ownership_boundary="Own source ledger and query rationale only.",
-                network=("enabled" if repo_policy.network_allowed_by_default else "none"),
-            ),
-            _node_spec(
-                "answer-synthesis",
-                "synthesis",
-                "synthesizer",
-                "Synthesize an answer from collected evidence without inventing unsupported facts.",
-                ["research-sources"],
-                ["answer_candidate", "citation_map"],
-                "stage-2",
-                "Retrieval tasks need answer synthesis after evidence is gathered.",
-                "Synthesis waits for the source evidence ledger.",
-                "Serial join point because a single answer must reconcile all cited evidence.",
-                "Use the source ledger to produce an answer candidate and citation map. Do not request repo writes.",
-                ["read_repo", "dataset_read"],
-                ["answer_candidate", "citation_map", "reasoning_log"],
-                ["workflow_skeleton.nodes[research-sources]", *pattern_refs[:2]],
-                capability_needs=["answer_synthesis", "citation_mapping"],
-                ownership_boundary="Own answer candidate and citation map only.",
-            ),
-            _node_spec(
-                "source-verify",
-                "verification",
-                "verifier",
-                "Verify that the final answer is directly supported by cited evidence.",
-                ["answer-synthesis"],
-                ["source_verification_report", "final_answer"],
-                "stage-3",
-                "A source verifier catches stale, mismatched, or unsupported retrieval answers.",
-                "Verification depends on the synthesized answer and citation map.",
-                "Terminal review gate; read-only and evidence-grounded.",
-                "Check every cited claim against the source ledger and produce final answer evidence.",
-                ["read_repo", "dataset_read", "browser"] + (["network_search"] if repo_policy.network_allowed_by_default else []),
-                ["source_verification_report", "final_answer", "resource_report"],
-                ["workflow_skeleton.nodes[answer-synthesis]", *pattern_refs[:3]],
-                capability_needs=["source_verification", "dataset_read"],
-                ownership_boundary="Own read-only source verification evidence.",
-                network=("enabled" if repo_policy.network_allowed_by_default else "none"),
-            ),
-        ]
-        return _template(
-            family,
-            "research_synthesize_source_verify",
-            "retrieval",
-            False,
-            False,
-            node_specs,
-            [["research-sources", "answer-synthesis"], ["answer-synthesis", "source-verify"]],
-            ["."],
-            ["External web may be unavailable; use local corpus first and escalate through Overlooker if evidence is insufficient."],
-            ["One researcher builds evidence, one synthesizer answers, one verifier checks sources."],
-            [
-                "Classified as retrieval, so no writer node is planned.",
-                "Selected a research and source-verifier route before considering multi-candidate reasoning.",
-                "Large agent pools are deferred unless evidence conflict remains after source verification.",
-            ],
-            [
-                "Selected retrieval patterns favor source evidence, citation mapping, and verifier gates.",
-                "Experience is applied as routing knowledge; compiler permissions still block ungrounded network access.",
-            ],
+                node_id,
+                phase,
+                role,
+                goal,
+                depends_on,
+                expected_outputs,
+                stage_id,
+                reason,
+                (
+                    "No predecessor is needed because this node starts from the task profile."
+                    if not depends_on
+                    else "Depends on upstream evidence declared in the selected candidate workflow."
+                ),
+                (
+                    "Runs independently until downstream evidence shows a need to merge or split work."
+                    if not depends_on
+                    else "Runs after upstream handoff to keep ownership and evidence order explicit."
+                ),
+                prompt,
+                permission_intents,
+                required_evidence,
+                refs,
+                capability_needs=capability_needs,
+                ownership_boundary=ownership_boundary,
+                write_paths=write_paths,
+                allowed_commands=allowed_commands,
+                network=network,
+                permission_justification=permission_justification,
+            )
         )
 
-    if family == "finance_calculation":
-        node_specs = [
-            _node_spec(
-                "collect-financial-inputs",
-                "research",
-                "researcher",
-                "Collect financial inputs, assumptions, and source notes for the requested calculation.",
-                [],
-                ["financial_inputs", "source_notes"],
-                "stage-1",
-                "Finance tasks fail first on missing inputs or stale assumptions.",
-                "No predecessor is needed because input collection starts from the prompt.",
-                "Runs before calculation to freeze assumptions.",
-                "Extract required values, dates, units, and source notes. Do not edit files.",
-                ["read_repo", "dataset_read"] + (["network_search"] if repo_policy.network_allowed_by_default else []),
-                ["financial_inputs", "source_notes", "assumption_log"],
-                ["objective", "available_tooling_profiles", *pattern_refs[:2]],
-                capability_needs=["finance_inputs", "dataset_read"],
-                ownership_boundary="Own financial inputs and assumptions only.",
-                network=("enabled" if repo_policy.network_allowed_by_default else "none"),
-            ),
-            _node_spec(
-                "calculate-answer",
-                "calculation",
-                "calculator",
-                "Apply the relevant formula and produce calculator-backed numerical evidence.",
-                ["collect-financial-inputs"],
-                ["formula_trace", "calculated_answer"],
-                "stage-2",
-                "A dedicated calculator separates arithmetic from source collection.",
-                "Calculation waits for frozen inputs and assumptions.",
-                "Serial because the formula trace must use one input ledger.",
-                "Compute the answer with explicit formula steps and calculator evidence.",
-                ["read_repo", "finance_calculator"],
-                ["formula_trace", "calculated_answer", "calculator_log"],
-                ["workflow_skeleton.nodes[collect-financial-inputs]", *pattern_refs[:2]],
-                capability_needs=["finance_calculator", "formula_application"],
-                ownership_boundary="Own formula trace and computed answer only.",
-            ),
-            _node_spec(
-                "formula-verify",
-                "verification",
-                "verifier",
-                "Verify formulas, units, arithmetic, and answer formatting.",
-                ["calculate-answer"],
-                ["formula_check_report", "final_answer"],
-                "stage-3",
-                "Finance outputs require independent formula and arithmetic review.",
-                "Verification depends on the calculated answer.",
-                "Terminal read-only review gate.",
-                "Check formulas, units, and arithmetic against the input ledger.",
-                ["read_repo", "finance_calculator", "dataset_read"],
-                ["formula_check_report", "final_answer", "resource_report"],
-                ["workflow_skeleton.nodes[calculate-answer]", *pattern_refs[:3]],
-                capability_needs=["formula_check", "finance_calculator"],
-                ownership_boundary="Own read-only formula verification evidence.",
-            ),
-        ]
-        return _template(
-            family,
-            "finance_inputs_calculation_formula_verify",
-            "analysis",
-            False,
-            False,
-            node_specs,
-            [["collect-financial-inputs", "calculate-answer"], ["calculate-answer", "formula-verify"]],
-            ["."],
-            ["External market data may be unavailable; use provided/local inputs first and escalate if required values are missing."],
-            ["One input researcher, one calculator, and one verifier are enough unless scenarios multiply."],
-            [
-                "Classified as finance calculation, so the plan centers on inputs, formula trace, and independent arithmetic verification.",
-                "Rejected a code-repair template because no patch ownership or repo tests are intrinsic to the task.",
-                "Multi-candidate work is deferred unless the objective asks for scenarios or conflicting methods.",
-            ],
-            [
-                "Selected finance patterns emphasize formula evidence and source-grounded assumptions.",
-                "Experience is applied as calculation structure; permission grounding keeps repo writes unavailable.",
-            ],
-        )
-
-    if family == "terminal_execution":
-        shell_commands = repo_policy.test_commands
-        node_specs = [
-            _node_spec(
-                "plan-terminal-actions",
-                "planning",
-                "tool_planner",
-                "Plan shell/container steps, write boundaries, and checkpoint evidence before execution.",
-                [],
-                ["shell_plan", "permission_risks"],
-                "stage-1",
-                "Terminal tasks need command and environment planning before execution.",
-                "No predecessor is needed because this is the permission and checkpoint plan.",
-                "Serial by design so execution has a single approved command plan.",
-                "Produce a shell/container action plan with checkpoint evidence and permission risks. Do not execute commands.",
-                ["read_repo"],
-                ["shell_plan", "permission_risks", "checkpoint_plan"],
-                ["objective", "repo_policy", *pattern_refs[:2]],
-                capability_needs=["terminal_planning", "permission_review"],
-                ownership_boundary="Own command plan and permission-risk notes only.",
-            ),
-            _node_spec(
-                "execute-checkpoint",
-                "execution",
-                "executor",
-                "Execute approved shell/container steps and capture checkpoint evidence.",
-                ["plan-terminal-actions"],
-                ["checkpoint_artifact", "execution_log"],
-                "stage-2",
-                "A separate executor makes shell/container permission use explicit and auditable.",
-                "Execution waits for the command plan and Overlooker permission review.",
-                "Serial because shell state changes must be ordered and checkpointed.",
-                "Use only approved shell/container commands from the plan and record checkpoint artifacts.",
-                ["read_repo", "run_shell", "container_exec"],
-                ["checkpoint_artifact", "execution_log", "sandbox_events", "resource_report"],
-                ["workflow_skeleton.nodes[plan-terminal-actions]", "repo_policy.test_commands", *pattern_refs[:2]],
-                capability_needs=["terminal_shell", "container_exec", "checkpoint"],
-                ownership_boundary="Own approved execution log and checkpoint artifacts only.",
-                allowed_commands=shell_commands,
-                permission_justification="Terminal execution needs shell/container permission, bounded by Overlooker-approved command plans and repo policy commands.",
-            ),
-            _node_spec(
-                "verify-checkpoint",
-                "verification",
-                "verifier",
-                "Verify checkpoint state, exit evidence, and resource report.",
-                ["execute-checkpoint"],
-                ["checkpoint_verification_report", "final_state_report"],
-                "stage-3",
-                "Terminal-Bench style tasks need checkpoint verification rather than patch review.",
-                "Verification depends on execution evidence.",
-                "Terminal read-only gate over command evidence and artifacts.",
-                "Verify checkpoint artifacts and command outcomes without adding new state changes.",
-                ["read_repo", "run_shell", "container_exec"],
-                ["checkpoint_verification_report", "final_state_report", "resource_report"],
-                ["workflow_skeleton.nodes[execute-checkpoint]", *pattern_refs[:3]],
-                capability_needs=["checkpoint_verification", "terminal_shell"],
-                ownership_boundary="Own checkpoint verification evidence only.",
-                allowed_commands=shell_commands,
-                permission_justification="Checkpoint verification may need read-only shell/container checks under the same command boundary.",
-            ),
-        ]
-        return _template(
-            family,
-            "terminal_plan_execute_checkpoint_verify",
-            "terminal_execution",
-            False,
-            True,
-            node_specs,
-            [["plan-terminal-actions", "execute-checkpoint"], ["execute-checkpoint", "verify-checkpoint"]],
-            ["."],
-            ["Concrete shell commands must be approved by Overlooker before execution if repo policy has no whitelist."],
-            ["A planner, executor, and checkpoint verifier separate permission review from shell state changes."],
-            [
-                "Classified as terminal execution, so the selected topology is tool planning, checkpoint execution, and verification.",
-                "Rejected code repair because Terminal-Bench success is environment state, not a source patch by default.",
-                "Scaling adds specialist executors only if checkpoints split into independent environments.",
-            ],
-            [
-                "Selected terminal patterns emphasize permission-gated execution and checkpoint evidence.",
-                "Experience is applied as shell/container structure; Overlooker remains responsible for permission escalation.",
-            ],
-        )
-
-    if family == "planning_state_transition":
-        node_specs = [
-            _node_spec(
-                "ambiguity-check",
-                "analysis",
-                "ambiguity_detector",
-                "Detect state-transition ambiguity before committing to a plan.",
-                [],
-                ["ambiguity_report", "state_assumptions"],
-                "stage-1",
-                "PlanCraft style tasks should not execute before ambiguous state rules are surfaced.",
-                "No predecessor is needed because this is prompt-local diagnosis.",
-                "Runs first and serializes downstream planning on clarified assumptions.",
-                "Identify ambiguous state variables, transition rules, and required assumptions.",
-                ["read_repo"],
-                ["ambiguity_report", "state_assumptions"],
-                ["objective", *pattern_refs[:2]],
-                capability_needs=["ambiguity_detection", "state_modeling"],
-                ownership_boundary="Own ambiguity report and state assumptions only.",
-            ),
-            _node_spec(
-                "state-plan",
-                "planning",
-                "planner",
-                "Produce a state-transition plan under the accepted assumptions.",
-                ["ambiguity-check"],
-                ["transition_plan", "state_trace"],
-                "stage-2",
-                "Planning must consume the ambiguity report before selecting actions.",
-                "Depends on explicit state assumptions.",
-                "Serial because one transition trace must be checked end to end.",
-                "Create the transition plan and state trace from accepted assumptions.",
-                ["read_repo"],
-                ["transition_plan", "state_trace"],
-                ["workflow_skeleton.nodes[ambiguity-check]", *pattern_refs[:2]],
-                capability_needs=["state_planning"],
-                ownership_boundary="Own transition plan and state trace only.",
-            ),
-            _node_spec(
-                "transition-verify",
-                "verification",
-                "verifier",
-                "Verify the state trace and flag unresolved ambiguity.",
-                ["state-plan"],
-                ["state_transition_report", "final_plan"],
-                "stage-3",
-                "A state verifier prevents ambiguous tasks from being treated as ordinary execution.",
-                "Verification depends on transition trace.",
-                "Terminal review gate over state consistency.",
-                "Check every transition against the assumptions and report unresolved ambiguity.",
-                ["read_repo"],
-                ["state_transition_report", "final_plan"],
-                ["workflow_skeleton.nodes[state-plan]", *pattern_refs[:3]],
-                capability_needs=["state_transition_check", "ambiguity_review"],
-                ownership_boundary="Own state-transition verification only.",
-            ),
-        ]
-        return _template(
-            family,
-            "ambiguity_check_state_plan_verify",
-            "analysis",
-            False,
-            False,
-            node_specs,
-            [["ambiguity-check", "state-plan"], ["state-plan", "transition-verify"]],
-            ["."],
-            ["If ambiguity remains after stage 1, stop for clarification rather than punishing workers."],
-            ["One ambiguity detector, one planner, and one verifier are enough for the current deterministic route."],
-            [
-                "Classified as planning/state transition, so ambiguity detection is the first-class gate.",
-                "Rejected retrieval and code repair paths because success is state consistency.",
-                "Scaling adds candidate plans only after ambiguity is resolved.",
-            ],
-            [
-                "Selected planning patterns emphasize ambiguity attribution and state verification.",
-                "Experience is applied as a prompt-local reasoning structure, not a repo-write workflow.",
-            ],
-        )
-
-    if family == "contest_reasoning":
-        node_specs = [
-            _node_spec(
-                "candidate-generate",
-                "reasoning",
-                "proposer",
-                "Generate diverse candidate solution strategies.",
-                [],
-                ["candidate_set", "strategy_notes"],
-                "stage-1",
-                "Hard judged reasoning benefits from multiple candidate strategies.",
-                "No predecessor is needed because candidate generation starts from the prompt.",
-                "This is the initial candidate pool; future scale can add parallel proposers.",
-                "Generate diverse candidate strategies with assumptions and expected checks.",
-                ["read_repo"],
-                ["candidate_set", "strategy_notes"],
-                ["objective", *pattern_refs[:2]],
-                capability_needs=["candidate_generation", "contest_reasoning"],
-                ownership_boundary="Own candidate strategies only.",
-            ),
-            _node_spec(
-                "candidate-judge",
-                "judging",
-                "judge",
-                "Rank candidates using sample checks, judge criteria, or pairwise comparison.",
-                ["candidate-generate"],
-                ["ranked_candidates", "judge_trace"],
-                "stage-2",
-                "A judge node separates candidate quality assessment from generation.",
-                "Judging waits for candidate set.",
-                "Serial here, but scale triggers can add pairwise judges.",
-                "Evaluate candidates and explain ranking uncertainty.",
-                ["read_repo", "run_shell"],
-                ["ranked_candidates", "judge_trace", "validator_pass_rate"],
-                ["workflow_skeleton.nodes[candidate-generate]", *pattern_refs[:3]],
-                capability_needs=["judge", "pairwise_ranking"],
-                ownership_boundary="Own candidate ranking and judge trace only.",
-                allowed_commands=repo_policy.test_commands,
-            ),
-            _node_spec(
-                "solution-synthesis",
-                "synthesis",
-                "synthesizer",
-                "Synthesize the final solution from the highest-ranked candidate.",
-                ["candidate-judge"],
-                ["final_solution_candidate", "synthesis_trace"],
-                "stage-3",
-                "Final synthesis should use judged evidence instead of raw first-pass reasoning.",
-                "Synthesis depends on candidate ranking.",
-                "Serial join point before final verification.",
-                "Create the final answer from ranked candidates and preserve reasoning evidence.",
-                ["read_repo"],
-                ["final_solution_candidate", "synthesis_trace"],
-                ["workflow_skeleton.nodes[candidate-judge]", *pattern_refs[:3]],
-                capability_needs=["solution_synthesis"],
-                ownership_boundary="Own final solution candidate only.",
-            ),
-            _node_spec(
-                "final-verify",
-                "verification",
-                "verifier",
-                "Verify final solution with available judge/sample evidence.",
-                ["solution-synthesis"],
-                ["validation_report", "final_answer"],
-                "stage-4",
-                "Judged reasoning needs a final validator distinct from proposer and judge.",
-                "Verification depends on synthesized solution.",
-                "Terminal review gate.",
-                "Validate final answer against judge criteria and sample checks.",
-                ["read_repo", "run_shell"],
-                ["validation_report", "final_answer", "resource_report"],
-                ["workflow_skeleton.nodes[solution-synthesis]", *pattern_refs[:3]],
-                capability_needs=["validator", "sample_tests"],
-                ownership_boundary="Own final validation evidence only.",
-                allowed_commands=repo_policy.test_commands,
-            ),
-        ]
-        return _template(
-            family,
-            "candidate_generate_judge_synthesize_verify",
-            "analysis",
-            False,
-            True,
-            node_specs,
-            [["candidate-generate", "candidate-judge"], ["candidate-judge", "solution-synthesis"], ["solution-synthesis", "final-verify"]],
-            ["."],
-            ["If judge confidence remains low, scale candidate generation and pairwise judging before final answer."],
-            ["Four nodes are selected because generation, judging, synthesis, and validation have different failure modes."],
-            [
-                "Classified as contest reasoning, so multi-candidate work is worthwhile.",
-                "Selected candidate generation plus judge before final synthesis.",
-                "Scaling policy can expand to larger populations when ranking entropy remains high.",
-            ],
-            [
-                "Selected reasoning patterns emphasize candidate diversity, judging, and validation.",
-                "Experience is applied as adaptive scaling guidance rather than a fixed agent count.",
-            ],
-        )
-
-    if family == "code_repair":
-        return _code_repair_template(repo_policy, pattern_refs)
-
-    return _analysis_template(pattern_refs)
-
-
-def _analysis_template(pattern_refs: list[str]) -> dict[str, Any]:
-    node_specs = [
-        _node_spec(
-            "analyze-task",
-            "analysis",
-            "analyst",
-            "Analyze the prompt-local objective and produce a grounded answer plan.",
-            [],
-            ["analysis_report", "answer_plan"],
-            "stage-1",
-            "Prompt-local analysis should not allocate a writer or shell executor by default.",
-            "No predecessor is needed because this starts from the objective.",
-            "Runs first and remains read-only.",
-            "Analyze the objective and produce the smallest sufficient answer plan. Do not edit files.",
-            ["read_repo"],
-            ["analysis_report", "answer_plan"],
-            ["objective", *pattern_refs[:2]],
-            capability_needs=["analysis"],
-            ownership_boundary="Own prompt-local analysis and answer plan only.",
-        ),
-        _node_spec(
-            "verify-answer-plan",
-            "verification",
-            "verifier",
-            "Verify the answer plan for internal consistency and unsupported assumptions.",
-            ["analyze-task"],
-            ["verification_report", "final_answer"],
-            "stage-2",
-            "Even cheap prompt-local paths need an explicit consistency check.",
-            "Verification depends on the analysis report.",
-            "Terminal read-only review gate.",
-            "Check the answer plan for consistency and unsupported assumptions.",
-            ["read_repo"],
-            ["verification_report", "final_answer"],
-            ["workflow_skeleton.nodes[analyze-task]", *pattern_refs[:2]],
-            capability_needs=["consistency_check"],
-            ownership_boundary="Own read-only answer verification only.",
-        ),
-    ]
-    return _template(
-        "analysis",
-        "prompt_analysis_then_consistency_verify",
-        "analysis",
-        False,
-        False,
-        node_specs,
-        [["analyze-task", "verify-answer-plan"]],
-        ["."],
-        ["No concrete external tool, dataset, terminal, finance, or repo patch need was detected."],
-        ["One analyst and one verifier keep prompt-local tasks cheap while preserving an evidence gate."],
-        [
-            "Classified as analysis, so no writer, browser, calculator, shell, or candidate pool is pre-allocated.",
-            "Selected the cheapest verifiable path with an explicit consistency verifier.",
-            "Scale only if verification exposes missing knowledge or ambiguity.",
-        ],
-        [
-            "Selected analysis patterns emphasize cheap prompt-local reasoning with a verifier gate.",
-            "Experience is applied as a minimal structure; compiler still enforces permission grounding.",
-        ],
+    add_node(
+        "task-framing",
+        "diagnosis",
+        "analyst",
+        "Re-read the objective, task profile, candidate structures, and permission constraints before specialist work.",
+        [],
+        ["task_frame", "risk_register"],
+        "Director selected a framing node so later agents inherit the same task profile and stop conditions.",
+        "Produce a task frame, uncertainty ledger, and explicit handoff contract. Do not edit files.",
+        ["read_repo"],
+        ["task_frame", "risk_register"],
+        ["analysis", "task_profile_review"],
+        "Own the task frame, uncertainty ledger, and handoff constraints only.",
     )
 
+    upstream: list[str] = ["task-framing"]
+    evidence_nodes: list[str] = []
+    work_nodes: list[str] = []
 
-def _code_repair_template(repo_policy: RepoPolicy, pattern_refs: list[str]) -> dict[str, Any]:
-    node_specs = [
-        _node_spec(
-            "explore-context",
-            "exploration",
-            "explorer",
-            "Inspect repository touchpoints and summarize likely implementation surfaces.",
-            [],
-            ["touchpoint_map", "analysis_log"],
-            "stage-1",
-            "Read-only source discovery is separable from tests and writes.",
-            "No predecessor is needed because this is initial discovery.",
-            "This can run in parallel with test exploration because both are read-only.",
-            "Inspect the workspace and produce a concise touchpoint map. Do not edit files.",
+    if needs_source_evidence:
+        intents = ["read_repo", "dataset_read", "browser"]
+        if repo_policy.network_allowed_by_default:
+            intents.append("network_search")
+        add_node(
+            "evidence-gathering",
+            "research",
+            "researcher",
+            "Gather the minimum source, corpus, or dataset evidence needed by the task profile.",
+            upstream,
+            ["evidence_ledger", "source_quality_notes"],
+            "Knowledge sources require evidence before answer synthesis or verification.",
+            "Collect local dataset/corpus evidence first, use browser or network only if already permitted, and preserve citations.",
+            intents,
+            ["evidence_ledger", "query_log", "resource_report"],
+            ["dataset_read", "browser", "source_evidence"],
+            "Own evidence ledger and query rationale only.",
+            network=("enabled" if repo_policy.network_allowed_by_default else "none"),
+            permission_justification="Evidence-gathering permission is needed because the task profile names non-prompt knowledge sources or source-based verification.",
+        )
+        evidence_nodes.append("evidence-gathering")
+
+    if needs_calculation:
+        add_node(
+            "specialist-calculation",
+            "calculation",
+            "calculator",
+            "Compute the requested result with explicit formulas, units, and calculator evidence.",
+            evidence_nodes or upstream,
+            ["calculation_trace", "computed_answer"],
+            "Verification methods require formula or arithmetic evidence, so calculation is separated from source gathering.",
+            "Apply the relevant formula, show inputs and units, and emit calculator evidence for verification.",
+            ["read_repo", "finance_calculator"],
+            ["calculation_trace", "computed_answer", "calculator_log"],
+            ["finance_calculator", "formula_check", "calculation"],
+            "Own numerical calculation trace and computed answer only.",
+            permission_justification="finance_calculator is needed because task_profile.verification_methods requires formula or answer checking.",
+        )
+        work_nodes.append("specialist-calculation")
+
+    if needs_state_reasoning:
+        add_node(
+            "state-reasoning",
+            "planning",
+            "planner",
+            "Resolve state assumptions and produce a checkable transition or planning trace.",
+            evidence_nodes or upstream,
+            ["state_assumptions", "transition_trace"],
+            "The task profile calls out state or ambiguity verification, so reasoning must expose assumptions before final review.",
+            "Identify state variables, assumptions, transitions, and unresolved ambiguity.",
             ["read_repo"],
-            ["touchpoint_map", "analysis_log", "resource_report"],
-            ["objective", "repo_policy.allowed_read_paths", *pattern_refs[:2]],
-            capability_needs=["repo_read"],
-            ownership_boundary="Own read-only source touchpoint map only.",
-        ),
-        _node_spec(
-            "explore-tests",
-            "exploration",
-            "explorer",
-            "Inspect validation commands, expected test evidence, and failure risks.",
-            [],
-            ["test_plan", "risk_notes"],
-            "stage-1",
-            "Validation discovery has independent ownership from source touchpoint discovery.",
-            "No predecessor is needed because validation discovery starts from repo policy.",
-            "This runs in parallel with source exploration and joins before implementation.",
-            "Inspect available validation commands and produce a test plan. Do not edit source files.",
-            ["read_repo"],
-            ["test_plan", "risk_notes", "resource_report"],
-            ["repo_policy.test_commands", *pattern_refs[:3]],
-            capability_needs=["repo_read", "test_planning"],
-            ownership_boundary="Own read-only validation map only.",
-        ),
-        _node_spec(
-            "implement",
+            ["state_assumptions", "transition_trace"],
+            ["state_modeling", "ambiguity_detection", "state_transition_check"],
+            "Own state assumptions and transition trace only.",
+        )
+        work_nodes.append("state-reasoning")
+
+    if requires_code_change:
+        add_node(
+            "solution-work",
             "implementation",
             "worker",
-            "Apply the minimal code change after exploration outputs are available.",
-            ["explore-context", "explore-tests"],
+            "Apply the bounded repo change justified by the task profile and upstream analysis.",
+            evidence_nodes or upstream,
             ["diff", "worker_log"],
-            "stage-2",
-            "A single bounded writer avoids conflicting edits until ownership is proven wider.",
-            "Implementation waits for both exploration artifacts.",
-            "This is serial because write ownership is not yet proven independent.",
-            "Implement the smallest change required by the objective using exploration outputs.",
+            "The task diagnosis requires code change, so a bounded writer is introduced after read-only framing.",
+            "Implement the smallest repo patch needed by the objective and preserve diff evidence.",
             ["read_repo", "write_patch"],
             ["diff", "worker_log", "sandbox_events", "resource_report"],
-            ["workflow_skeleton.nodes[explore-context]", "workflow_skeleton.nodes[explore-tests]", *pattern_refs[:3]],
-            capability_needs=["repo_read", "write_patch"],
-            ownership_boundary="Own bounded patch under repo policy write paths.",
+            ["repo_read", "write_patch", "implementation"],
+            "Own bounded patch paths under repo policy only.",
             write_paths=list(repo_policy.allowed_write_paths),
-        ),
-        _node_spec(
-            "verify",
-            "verification",
-            "verifier",
-            "Run read-only verification and prepare validator-ready evidence.",
-            ["implement"],
-            ["test_report", "validator_ready_evidence"],
-            "stage-3",
-            "A terminal verifier checks the implementation handoff before acceptance.",
-            "Verification depends on implementation output.",
-            "This is a serial terminal review gate.",
-            "Run or inspect repo-grounded verification and produce validator-ready evidence.",
-            ["read_repo", "run_tests"],
-            ["test_report", "validator_ready_evidence", "resource_report"],
-            ["repo_policy.test_commands", "workflow_skeleton.nodes[implement]", *pattern_refs],
-            capability_needs=["repo_read", "test"],
-            ownership_boundary="Own read-only verification evidence.",
+            permission_justification="write_patch is needed because task_diagnosis.requires_code_change=true and the node owns bounded repo changes.",
+        )
+        work_nodes.append("solution-work")
+
+    if needs_tool_execution and not requires_code_change and not needs_candidates:
+        add_node(
+            "tool-execution",
+            "execution",
+            "executor",
+            "Execute approved tool, shell, or container actions and capture checkpoint evidence.",
+            evidence_nodes or upstream,
+            ["execution_log", "checkpoint_artifact"],
+            "The task profile requires tool-execution evidence, so execution is explicit and permission-gated.",
+            "Use only approved commands or runtime tools and record checkpoint evidence for Overlooker.",
+            ["read_repo", "run_shell", "container_exec"],
+            ["execution_log", "checkpoint_artifact", "sandbox_events", "resource_report"],
+            ["terminal_shell", "container_exec", "checkpoint", "tool_execution"],
+            "Own approved execution log and checkpoint artifacts only.",
             allowed_commands=repo_policy.test_commands,
-        ),
+            permission_justification="run_shell/container_exec is needed because verification depends on tool or checkpoint evidence.",
+        )
+        work_nodes.append("tool-execution")
+
+    if needs_candidates:
+        candidate_intents = ["read_repo"]
+        if needs_tool_execution:
+            candidate_intents.append("run_shell")
+        add_node(
+            "candidate-evaluation",
+            "reasoning",
+            "judge",
+            "Generate and compare candidate answers or strategies before final synthesis.",
+            evidence_nodes or upstream,
+            ["candidate_set", "ranking_trace"],
+            "The budget or verifier signals justify candidate comparison before committing to one answer.",
+            "Produce candidates, compare them with available judge/sample evidence, and expose ranking uncertainty.",
+            candidate_intents,
+            ["candidate_set", "ranking_trace", "validator_pass_rate"],
+            ["candidate_generation", "judge", "pairwise_ranking", "sample_tests"],
+            "Own candidate pool, ranking trace, and judge evidence only.",
+            allowed_commands=repo_policy.test_commands if "run_shell" in candidate_intents else None,
+            permission_justification="run_shell is included only when candidate judging depends on executable sample or validator checks.",
+        )
+        work_nodes.append("candidate-evaluation")
+
+    if not work_nodes:
+        add_node(
+            "answer-synthesis",
+            "synthesis",
+            "synthesizer",
+            "Synthesize the answer or action plan from the task frame and available evidence.",
+            evidence_nodes or upstream,
+            ["answer_candidate", "synthesis_trace"],
+            "No write, shell, calculator, or candidate pool is justified yet, so synthesis remains a cheap bounded step.",
+            "Use upstream evidence to produce a candidate answer or plan with explicit assumptions.",
+            ["read_repo"] + (["dataset_read"] if evidence_nodes else []),
+            ["answer_candidate", "synthesis_trace"],
+            ["answer_synthesis", "consistency_check"],
+            "Own answer candidate and synthesis trace only.",
+            permission_justification="Synthesis uses only already gathered evidence and does not require new privileged tools.",
+        )
+        work_nodes.append("answer-synthesis")
+
+    verify_intents = ["read_repo"]
+    verify_capabilities = ["verification", "consistency_check"]
+    if requires_tests:
+        verify_intents.append("run_tests")
+        verify_capabilities.extend(["run_tests", "test"])
+    if needs_source_evidence:
+        verify_intents.extend(["dataset_read", "browser"])
+        if repo_policy.network_allowed_by_default:
+            verify_intents.append("network_search")
+        verify_capabilities.extend(["source_verification", "dataset_read"])
+    if needs_calculation:
+        verify_intents.append("finance_calculator")
+        verify_capabilities.extend(["finance_calculator", "formula_check"])
+    if needs_tool_execution and not requires_code_change:
+        verify_intents.extend(["run_shell", "container_exec"])
+        verify_capabilities.extend(["terminal_shell", "checkpoint_verification"])
+    add_node(
+        "outcome-verification",
+        "verification",
+        "verifier",
+        "Verify the selected result against task-profile success criteria, permissions, and evidence.",
+        work_nodes,
+        ["verification_report", "final_answer"],
+        "A final verifier is required so Overlooker can judge evidence without assuming the Director topology was correct.",
+        "Check upstream artifacts against verification methods and report missing evidence, permission gaps, or ambiguity.",
+        sorted(set(verify_intents), key=verify_intents.index),
+        ["verification_report", "final_answer", "resource_report"],
+        sorted(set(verify_capabilities), key=verify_capabilities.index),
+        "Own read-only verification evidence and final acceptance recommendation.",
+        allowed_commands=repo_policy.test_commands if any(intent in verify_intents for intent in ["run_tests", "run_shell"]) else None,
+        network=("enabled" if "network_search" in verify_intents else "none"),
+        permission_justification="Verification permission mirrors the evidence types selected by Director and remains read-only except approved tests/tools.",
+    )
+
+    edges = [
+        [dependency, str(spec["node_id"])]
+        for spec in node_specs
+        for dependency in spec.get("depends_on", [])
     ]
+    task_kind = "implementation" if requires_code_change else ("terminal_execution" if needs_tool_execution else "analysis")
     return _template(
-        "code_repair",
-        "parallel_explore_single_writer_verify_model_agents",
-        "implementation",
-        True,
-        True,
+        primary,
+        "profile_driven_capability_pipeline",
+        task_kind,
+        requires_code_change,
+        requires_tests,
         node_specs,
-        [["explore-context", "implement"], ["explore-tests", "implement"], ["implement", "verify"]],
+        edges,
         ["."],
-        ["Exact changed files remain unknown until exploration completes."],
         [
-            "Two read-only exploration surfaces can run independently.",
-            "One writer is enough until exploration proves independent write ownership.",
-            "A separate verifier gives explicit read-only acceptance evidence.",
+            "Concrete tools, evidence sources, and write surfaces remain bounded by permission review.",
+            "Live model Director may choose a different topology when its deliberation supports it.",
         ],
         [
-            "Compared single-agent, selected four-agent, and larger hierarchical candidates.",
-            "Selected model_agent units so the runtime is not bound to Codex CLI.",
-            "Kept large-scale expansion as trigger-based rather than pre-allocating unused agents.",
+            "Agent count equals the selected capability pipeline, not a fixed task-family recipe.",
+            "Director can merge cheap stages or split specialist stages during replanning if evidence warrants it.",
         ],
         [
-            "Selected code repair patterns guide topology, artifact handoff, review, and scale triggers.",
-            "Patterns are used only for structure; compiler and permission grounding still enforce execution safety.",
+            f"Task profile selected primary family {primary!r} and verification methods {sorted(verification)}.",
+            "Compared cheap single-agent, profile-driven capability pipeline, and large dynamic hierarchy.",
+            "Selected only capabilities grounded in task_profile, task_diagnosis, and repo_policy; compiler does not prescribe a family template.",
+        ],
+        [
+            "Experience patterns are used as priors for artifact handoff, review gates, and scale triggers.",
+            "The deterministic fallback is a model-output stand-in; production selection belongs to Director deliberation.",
         ],
     )
 
@@ -1103,7 +820,7 @@ def _alternative_skeletons(template: dict[str, Any], node_specs: list[dict[str, 
             "name": f"selected_{template['topology']}",
             "estimated_agents": len(node_specs),
             "stage_mapping": stage_mapping,
-            "strengths": ["task-family-specific roles", "explicit evidence handoffs", "bounded permissions"],
+            "strengths": ["profile-grounded roles", "explicit evidence handoffs", "bounded permissions"],
             "weaknesses": ["does not pre-allocate large specialist pools before evidence exists"],
             "selected": True,
             "rejection_reason": "",
@@ -1350,9 +1067,8 @@ def _draft_plan_review(
 ) -> dict[str, Any]:
     node_ids = [str(spec["node_id"]) for spec in node_specs]
     finding_text = (
-        "The draft uses a task-family-specific workflow and avoids falling back to the code repair template."
-        if family != "code_repair"
-        else "The draft keeps the code repair topology because task_profile.primary_task_family is code_repair."
+        "The draft uses a profile-driven capability pipeline and keeps topology selection as a Director decision, "
+        "not a compiler-enforced task-family recipe."
     )
     return {
         "review_id": f"draft-review-{family}-model-agent-1",
@@ -1369,35 +1085,35 @@ def _draft_plan_review(
         "structural_verdict": "pass",
         "structure_findings": [
             {
-                "finding_id": "draft-finding-task-family-template",
+                "finding_id": "draft-finding-director-choice",
                 "severity": "info",
                 "target": "workflow_skeleton.nodes",
                 "finding": finding_text,
-                "recommendation": "Keep task-family-specific nodes unless evidence contradicts the task_profile.",
+                "recommendation": "Keep, merge, split, or replace nodes only when the task profile and evidence justify the change.",
                 "decision_basis": _basis(
-                    "basis-draft-review-task-family",
+                    "basis-draft-review-director-choice",
                     ["draft_plan.nodes", "task_profile", *[f"experience:{item}" for item in selected_pattern_ids[:3]]],
-                    [family, "template matches task family", *node_ids],
+                    [family, "profile-driven capability selection", *node_ids],
                     "workflow_skeleton.nodes",
-                    "Replace the topology if Overlooker or verification evidence contradicts the task family.",
+                    "Replace the topology if Overlooker or verification evidence contradicts the selected capabilities.",
                 ),
             }
         ],
         "missing_capabilities": ["none"],
         "recommended_changes": [
             {
-                "change_id": "draft-change-task-family-template",
+                "change_id": "draft-change-director-choice",
                 "change_type": "no_change",
                 "target": "workflow_skeleton.nodes",
-                "rationale": "The final node set matches the diagnosed task family and permission needs.",
+                "rationale": "The final node set is grounded by the task profile, permission needs, and selected candidate comparison.",
             }
         ],
         "applied_changes": [
             {
-                "change_id": "draft-change-task-family-template",
+                "change_id": "draft-change-director-choice",
                 "applied": True,
                 "final_targets": [f"workflow_skeleton.nodes[{node_id}]" for node_id in node_ids],
-                "result": "The deterministic Director kept the reviewed task-family-specific node set.",
+                "result": "The deterministic Director kept the reviewed profile-driven capability pipeline.",
             }
         ],
         "rejected_changes": [],

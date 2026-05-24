@@ -21,9 +21,6 @@ CASES = [
         "retrieval",
         {"external_fact_evidence"},
         {"network_or_local_corpus"},
-        {"research-sources", "answer-synthesis", "source-verify"},
-        set(),
-        {"dataset_read", "browser"},
         False,
     ),
     (
@@ -32,9 +29,6 @@ CASES = [
         "finance_calculation",
         {"formula_check"},
         {"network_or_local_corpus"},
-        {"collect-financial-inputs", "calculate-answer", "formula-verify"},
-        set(),
-        {"finance_calculator"},
         False,
     ),
     (
@@ -43,9 +37,6 @@ CASES = [
         "code_repair",
         {"unit_tests"},
         {"repo", "tool_execution"},
-        {"explore-context", "explore-tests", "implement", "verify"},
-        set(),
-        {"write_patch", "run_tests"},
         False,
     ),
     (
@@ -54,9 +45,6 @@ CASES = [
         "terminal_execution",
         {"container_test"},
         {"tool_execution"},
-        {"plan-terminal-actions", "execute-checkpoint", "verify-checkpoint"},
-        set(),
-        {"run_shell", "container_exec"},
         False,
     ),
     (
@@ -65,9 +53,6 @@ CASES = [
         "planning_state_transition",
         {"state_transition_check"},
         {"prompt"},
-        {"ambiguity-check", "state-plan", "transition-verify"},
-        set(),
-        {"read_repo"},
         False,
     ),
     (
@@ -76,9 +61,6 @@ CASES = [
         "contest_reasoning",
         {"judge"},
         {"tool_execution"},
-        {"candidate-generate", "candidate-judge", "solution-synthesis", "final-verify"},
-        set(),
-        {"run_shell"},
         True,
     ),
     (
@@ -87,9 +69,6 @@ CASES = [
         "analysis",
         {"human_judgment"},
         {"prompt"},
-        {"analyze-task", "verify-answer-plan"},
-        set(),
-        {"read_repo"},
         False,
     ),
 ]
@@ -106,7 +85,7 @@ def main() -> int:
 
     profile_results: dict[str, dict[str, object]] = {}
     all_profiles_ok = True
-    for case_id, objective, expected_family, expected_verification, expected_sources, _, _, _, expected_multi in CASES:
+    for case_id, objective, expected_family, expected_verification, expected_sources, expected_multi in CASES:
         diagnosis = director.diagnose(objective, repo_policy)
         profile = diagnosis.task_profile
         families = set(profile.get("task_families", []))
@@ -136,7 +115,7 @@ def main() -> int:
     compiler = WorkflowCompiler()
     first_compiled = None
     first_blueprint = None
-    for case_id, objective, expected_family, _, _, expected_nodes, forbidden_nodes, expected_intents, _ in CASES:
+    for case_id, objective, expected_family, _, _, _ in CASES:
         workspace = runtime_root / f"model_director_{case_id}"
         blueprint = director.plan_with_model_director(
             objective,
@@ -165,13 +144,47 @@ def main() -> int:
             for item in blueprint.permission_plan
             if "write_patch" in item.get("permission_intents", [])
         ]
+        selected_alternatives = [
+            item
+            for item in blueprint.workflow_skeleton.alternative_skeletons
+            if item.get("selected")
+        ]
+        selected_mapping = selected_alternatives[0].get("stage_mapping", {}) if selected_alternatives else {}
+        mapped_node_ids = {
+            node_id
+            for node_list in selected_mapping.values()
+            if isinstance(node_list, list)
+            for node_id in node_list
+            if node_id in node_ids
+        }
+        assignment_node_ids = {
+            item.get("node_id")
+            for item in blueprint.work_assignment_plan
+        }
+        permission_skeleton_ids = {
+            item.get("skeleton_node_id")
+            for item in blueprint.permission_plan
+        }
+        grounded_write_intents = [
+            item
+            for item in write_intents
+            if blueprint.task_diagnosis.requires_code_change
+            or "write_patch" in {
+                capability
+                for assignment in blueprint.work_assignment_plan
+                if assignment.get("node_id") == item.get("skeleton_node_id")
+                for capability in assignment.get("capability_needs", [])
+            }
+        ]
         case_ok = (
             compiled.accepted
             and blueprint.task_profile.get("primary_task_family") == expected_family
-            and expected_nodes.issubset(node_ids)
-            and not forbidden_nodes.intersection(node_ids)
-            and expected_intents.issubset(intents)
-            and (expected_family == "code_repair" or not write_intents)
+            and len(node_ids) >= 2
+            and len(selected_alternatives) == 1
+            and mapped_node_ids == node_ids
+            and assignment_node_ids == node_ids
+            and permission_skeleton_ids == node_ids
+            and (not write_intents or len(grounded_write_intents) == len(write_intents))
         )
         all_fallbacks_ok = all_fallbacks_ok and case_ok
         fallback_results[case_id] = {

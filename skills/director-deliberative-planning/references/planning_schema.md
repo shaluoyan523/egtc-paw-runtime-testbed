@@ -71,6 +71,8 @@ Task family examples:
 - PlanCraft: `planning_state_transition`, verification by ambiguity review and state transition checks.
 - OpenDeepThink-style tasks: `contest_reasoning`, verification by judge, sample tests, pairwise ranking, and adaptive scaling.
 
+Task family is a profiling signal, not a topology rule. The Director must still compare candidate plans and ground final nodes, agent counts, and permission intents in this task instance's verification methods, knowledge sources, capabilities, and constraints.
+
 ## linear_requirement_flow
 
 List of ordered records:
