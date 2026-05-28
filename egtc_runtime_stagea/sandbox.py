@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import resource
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .models import NodeCapsule, to_plain_dict
-from .resource_compat import ResourceUsage
 
 
 @dataclass
@@ -121,8 +121,8 @@ class SandboxRuntime:
         self,
         node: NodeCapsule,
         start_time: float,
-        usage_before: ResourceUsage,
-        usage_after: ResourceUsage,
+        usage_before: resource.struct_rusage,
+        usage_after: resource.struct_rusage,
         timed_out: bool,
         command_count: int,
         network_attempt_count: int = 0,

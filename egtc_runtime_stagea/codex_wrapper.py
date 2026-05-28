@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import resource
 import shutil
 import subprocess
 import time
@@ -13,7 +14,6 @@ from typing import Any
 
 from .model_agent import ModelAgentRegistry, ModelAgentRequest
 from .models import ActorIdentity, CapabilityToken, NodeCapsule, WorkerResult
-from .resource_compat import get_child_usage
 from .sandbox import SandboxRuntime
 
 
@@ -49,7 +49,7 @@ class CodexExecWrapper:
         spec = self.sandbox.prepare(node)
         command = self._build_command(node, cwd, spec.codex_sandbox)
         start_time = time.time()
-        usage_before = get_child_usage()
+        usage_before = resource.getrusage(resource.RUSAGE_CHILDREN)
         timed_out = False
         sandbox_events = self.sandbox.start_events(run_id, node, agent_id, spec, cwd)
         network_attempt_count = 0
@@ -87,7 +87,7 @@ class CodexExecWrapper:
                 stdout = exc.stdout if isinstance(exc.stdout, str) else ""
                 stderr = exc.stderr if isinstance(exc.stderr, str) else ""
                 stderr += f"\nSandbox timeout after {spec.resource_limits.wall_time_sec}s\n"
-        usage_after = get_child_usage()
+        usage_after = resource.getrusage(resource.RUSAGE_CHILDREN)
         sandbox_events.extend(
             self.sandbox.finish_events(run_id, node, agent_id, exit_code, timed_out)
         )

@@ -43,7 +43,6 @@ class EvidenceCollector:
         if workspace_test_report:
             test_events.append(workspace_test_report)
         tool_artifacts = self._workspace_tool_artifacts(workspace, node.node_id)
-        em_artifacts = self._workspace_em_artifacts(workspace, node.node_id)
         artifacts = {
             "log": worker_result.stdout_ref,
             "stderr": worker_result.stderr_ref,
@@ -64,7 +63,6 @@ class EvidenceCollector:
             ),
         }
         artifacts.update(tool_artifacts)
-        artifacts.update(em_artifacts)
         summary = {
             "evidence_id": evidence_id,
             "node_id": node.node_id,
@@ -143,97 +141,3 @@ class EvidenceCollector:
                 self.token,
             )
         return artifacts
-
-    def _workspace_em_artifacts(
-        self,
-        workspace: Path | None,
-        node_id: str,
-    ) -> dict[str, object]:
-        if not workspace:
-            return {}
-        artifacts: dict[str, object] = {}
-
-        json_artifacts = {
-            "bridge_report": [workspace / "bridge_report.json"],
-            "geometry_manifest": [workspace / "geometry_manifest.json"],
-            "input_manifest": [workspace / "input_manifest.json"],
-            "solver_report": [workspace / "solver_report.json"],
-            "validation_report": [workspace / "validation_report.json"],
-            "optimizer_report": [workspace / "optimizer_report.json"],
-            "mesh_report": [workspace / "mesh_report.json", workspace / "results" / "mesh_report.json"],
-        }
-        for key, candidates in json_artifacts.items():
-            path = self._first_existing(candidates)
-            if path is not None:
-                artifacts[key] = self._put_json_or_bytes(path, key, node_id)
-
-        log_path = self._first_existing(
-            [
-                workspace / "hfss_patch_antenna_log.json",
-                workspace / "hfss_run_log.json",
-                *sorted(workspace.glob("*.ansysedt.log")),
-            ]
-        )
-        if log_path is not None:
-            artifacts["solver_log"] = self.artifact_store.put_bytes(
-                log_path.read_bytes(),
-                "text/plain",
-                {"kind": "solver_log", "node_id": node_id, "source_path": str(log_path)},
-                self.actor,
-                self.token,
-            )
-
-        sparameter_candidates = [
-            *sorted(workspace.glob("*.s1p")),
-            *sorted(workspace.glob("*.s2p")),
-            *sorted(workspace.glob("*.s3p")),
-        ]
-        results_dir = workspace / "results"
-        if results_dir.exists():
-            sparameter_candidates.extend(sorted(results_dir.glob("*.s1p")))
-            sparameter_candidates.extend(sorted(results_dir.glob("*.s2p")))
-            sparameter_candidates.extend(sorted(results_dir.glob("*.s3p")))
-        sparameter_path = self._first_existing(sparameter_candidates)
-        if sparameter_path is not None:
-            artifacts["sparameters"] = self.artifact_store.put_bytes(
-                sparameter_path.read_bytes(),
-                "text/plain",
-                {"kind": "sparameters", "node_id": node_id, "source_path": str(sparameter_path)},
-                self.actor,
-                self.token,
-            )
-
-        project_path = self._first_existing([*sorted(workspace.glob("*.aedt"))])
-        if project_path is not None:
-            artifacts["hfss_project"] = self.artifact_store.put_bytes(
-                str(project_path).encode("utf-8"),
-                "text/uri-list",
-                {"kind": "hfss_project", "node_id": node_id, "source_path": str(project_path)},
-                self.actor,
-                self.token,
-            )
-        return artifacts
-
-    def _first_existing(self, candidates: list[Path]) -> Path | None:
-        for path in candidates:
-            if path.exists() and path.is_file():
-                return path
-        return None
-
-    def _put_json_or_bytes(self, path: Path, kind: str, node_id: str):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return self.artifact_store.put_bytes(
-                path.read_bytes(),
-                "application/octet-stream",
-                {"kind": kind, "node_id": node_id, "source_path": str(path)},
-                self.actor,
-                self.token,
-            )
-        return self.artifact_store.put_json(
-            data,
-            {"kind": kind, "node_id": node_id, "source_path": str(path)},
-            self.actor,
-            self.token,
-        )

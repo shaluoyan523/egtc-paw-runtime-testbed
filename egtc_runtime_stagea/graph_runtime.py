@@ -2703,12 +2703,6 @@ Rules:
             source = Path(node.workspace)
         if source and source.exists():
             shutil.copytree(source, workspace, dirs_exist_ok=True)
-        if node.workspace:
-            node_workspace = Path(node.workspace)
-            if node_workspace.exists() and (
-                source is None or node_workspace.resolve() != source.resolve()
-            ):
-                shutil.copytree(node_workspace, workspace, dirs_exist_ok=True)
         (workspace / ".egtc_attempt.json").write_text(
             json.dumps(
                 {
