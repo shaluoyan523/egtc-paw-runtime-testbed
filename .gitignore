@@ -34,6 +34,25 @@ phaseg_workflow_learning_data/
 phaseh_model_agent_unit_data/
 phaseh_model_director_data/
 phaseh_model_retry_fork_data/
+em_bridge_runs/
+_em_runs/
+em_patch_experiments/
+em_patch_optimization_graph_data/
+em_patch_worker_smoke_runs/
+em_patch_worker_smoke_tmp/
+phaseh_model_agent_tool_call_data/
+results/
+
+# Local bridge/runtime reports.
+bridge_report.json
+bridge_steps.jsonl
+geometry_manifest.json
+input_manifest.json
+optimizer_report.json
+phasea_test_result.json
+solver_report.json
+validation_report.json
+batch.log
 
 # Local credentials/configuration must not be committed.
 .env

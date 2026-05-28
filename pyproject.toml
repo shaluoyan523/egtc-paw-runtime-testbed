@@ -19,4 +19,4 @@ modelscope = [
 ]
 
 [tool.setuptools]
-packages = ["egtc_runtime_stagea"]
+packages = ["egtc_runtime_stagea", "em_mcp_bridge"]

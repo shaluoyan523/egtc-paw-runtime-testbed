@@ -1,0 +1,22 @@
+{
+  "run_id": "patch-antenna-smoke",
+  "design": {
+    "project_name": "patch_antenna_2p45g",
+    "design_name": "bridge_design",
+    "units": "mm",
+    "parameters": {
+      "f0_ghz": 2.45,
+      "patch_width_mm": 37.2,
+      "substrate_er": 4.4,
+      "substrate_h_mm": 1.6
+    },
+    "sweep": {
+      "start_ghz": 1.0,
+      "stop_ghz": 4.0,
+      "points": 31
+    },
+    "targets": {
+      "s11_db_at_f0_max": -10
+    }
+  }
+}
